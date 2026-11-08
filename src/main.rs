@@ -56,8 +56,6 @@ struct App {
     size: Size,
     wheel: f32,
     statuses: Vec<(u64, Status)>,
-    /// The tab under the pointer: its `×` shows.
-    hovered_tab: Option<u64>,
     focused: bool,
     error: Option<String>,
 }
@@ -94,7 +92,6 @@ fn init() -> App {
         size: Size { cols: 100, rows: 30 },
         wheel: 0.0,
         statuses: Vec::new(),
-        hovered_tab: None,
         focused: true,
         error: None,
     }
@@ -455,21 +452,14 @@ fn title_bar(s: &App) -> El {
         let id = t.session.id;
         let selected = s.active == Some(id);
         let ink = if selected { c.ink_100 } else { c.ink_50 };
-        let mut tab = row().key(format!("tab-{i}")).h(ROW_HEIGHT).px(SPACE_10).radius(RADIUS_8).gap(SPACE_8).items_center()
+        let mut tab = row().key(format!("tab-{i}")).h(TAB_HEIGHT).px(SPACE_10).radius(RADIUS_8).gap(SPACE_8).items_center()
             .max_w(TAB_MAX_WIDTH).min_w(0.0).shrink()
-            .role("tab").label(t.session.label()).checked(selected)
+            .role("tab").label(t.session.tab_label()).checked(selected)
             .hover(c.hover)
-            .on_hover_change(move |s: &mut App, inside, _tx| {
-                if inside {
-                    s.hovered_tab = Some(id);
-                } else if s.hovered_tab == Some(id) {
-                    s.hovered_tab = None;
-                }
-            })
             .on_press(move |s: &mut App| s.select_tab(id))
             .child(icon(&icons::PROMPT, 14.0).color(ink))
-            .child(label(t.session.label(), ROW_SMALL, ink).truncate().shrink().min_w(0.0));
-        if selected || s.hovered_tab == Some(id) {
+            .child(label(t.session.tab_label(), ROW_SMALL, ink).truncate().shrink().min_w(0.0));
+        if selected {
             tab = tab.child(
                 el().key(format!("tab-{i}-close")).size(16.0, 16.0).radius(RADIUS_4).center().hover_group().hover(c.press)
                     .role("button").label("Close tab")

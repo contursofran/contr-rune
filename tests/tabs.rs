@@ -95,11 +95,58 @@ fn plus_opens_a_tab() {
 }
 
 #[test]
-fn hover_shows_close_on_an_unselected_tab() {
+fn hover_does_not_move_tabs_or_show_close() {
+    let before = run("hover-before", r#"[{"t": 0.5, "type": "mark", "name": "idle"}]"#);
     let els = run("hover", r#"[{"t": 0.5, "type": "move", "key": "tab-0"}]"#);
-    assert!(find(&els, "tab-0-close").is_some(), "hovered tab shows its close box");
-    assert!(find(&els, "tab-1-close").is_none());
-    assert!(find(&els, "tab-2-close").is_some(), "selected tab keeps it");
+    assert!(find(&els, "tab-0-close").is_none(), "only the selected tab has a close box");
+    assert!(find(&els, "tab-2-close").is_some());
+    for k in ["tab-0", "tab-1", "tab-2", "tab-new"] {
+        assert_eq!(rect(&els, k), rect(&before, k), "{k} does not move on hover");
+    }
+}
+
+#[test]
+fn selected_tab_has_the_panel_fill_and_line() {
+    let els = run("fill", r#"[{"t": 0.5, "type": "mark", "name": "idle"}]"#);
+    // `panel` is rgba(20,21,24,.85).
+    assert_eq!(find(&els, "tab-2").unwrap()["fill"], "#141518d9");
+    assert_eq!(find(&els, "tab-0").unwrap()["fill"], "#00000000", "unselected tab has no fill");
+    assert_eq!(find(&els, "tab-1").unwrap()["fill"], "#00000000");
+}
+
+/// The tree has no borders, so read the snapshot: the selected tab's top edge row (1 px
+/// `panel-line`, white at 6.5%) is brighter than the fill just inside it.
+#[test]
+fn selected_tab_has_the_inset_line() {
+    let dir = std::env::temp_dir().join(format!("contr-tabs-snap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (snap, tree) = (dir.join("snap.png"), dir.join("tree.json"));
+    let out = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
+        .args(["--size", "1710x1112", "--scale", "1", "--scene", "three-tabs", "--at", "1", "--snap"])
+        .arg(&snap)
+        .arg("--tree")
+        .arg(&tree)
+        .env("CONTR_PROJECTS", std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let t: Value = serde_json::from_str(&std::fs::read_to_string(&tree).unwrap()).unwrap();
+    let els = t["elements"].as_array().unwrap().clone();
+    let r = rect(&els, "tab-2");
+    let decoder = png::Decoder::new(std::fs::File::open(&snap).unwrap());
+    let mut reader = decoder.read_info().unwrap();
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).unwrap();
+    let ch = info.color_type.samples();
+    // A column in the tab's right padding, clear of text and icons.
+    let x = (r[0] + r[2] - 24.0) as usize;
+    let lum = |y: usize| {
+        let i = (y * info.width as usize + x) * ch;
+        buf[i] as u32 + buf[i + 1] as u32 + buf[i + 2] as u32
+    };
+    let (edge, inside) = (lum(r[1] as usize), lum(r[1] as usize + 3));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(edge > inside + 15, "top edge {edge} should be brighter than the fill {inside}");
 }
 
 #[test]
@@ -119,6 +166,22 @@ fn ctrl_tab_cycles_tabs() {
     assert_eq!(selected_tab(&els), 0, "from the last tab, Ctrl+Tab wraps to the first");
     let els = run("cycle-back", r#"[{"t": 0.5, "type": "key", "name": "Tab", "ctrl": true, "shift": true}]"#);
     assert_eq!(selected_tab(&els), 1);
+}
+
+#[test]
+fn ctrl_page_keys_cycle_tabs() {
+    // The scene ends on the last tab: PageDown wraps to the first, PageUp goes back one.
+    let els = run("pgdn", r#"[{"t": 0.5, "type": "key", "name": "PageDown", "ctrl": true}]"#);
+    assert_eq!(selected_tab(&els), 0);
+    let els = run("pgup", r#"[{"t": 0.5, "type": "key", "name": "PageUp", "ctrl": true}]"#);
+    assert_eq!(selected_tab(&els), 1);
+    let els = run(
+        "pgdn-pgup",
+        r#"[{"t": 0.5, "type": "key", "name": "PageDown", "ctrl": true},
+            {"t": 1.0, "type": "key", "name": "PageDown", "ctrl": true},
+            {"t": 1.5, "type": "key", "name": "PageUp", "ctrl": true}]"#,
+    );
+    assert_eq!(selected_tab(&els), 0, "0 -> 1 -> 0");
 }
 
 #[test]

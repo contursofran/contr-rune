@@ -195,6 +195,7 @@ pub const FILES_WIDTH: f32 = 302.0;
 pub const ROW_HEIGHT: f32 = 30.0;
 pub const FILE_ROW_HEIGHT: f32 = 26.0;
 pub const ICON_BUTTON: f32 = 28.0;
+pub const TAB_HEIGHT: f32 = 30.0;
 pub const TAB_MAX_WIDTH: f32 = 180.0;
 pub const NOTCH_HEIGHT: f32 = 30.0;
 pub const NOTCH_OPEN_WIDTH: f32 = 600.0;

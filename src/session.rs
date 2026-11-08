@@ -165,28 +165,55 @@ impl Session {
         self.dirty.store(true, Ordering::Release);
     }
 
-    /// The tab label: the shell's OSC title, else the shell's name ("zsh").
+    /// The tab label: the program's title (shell OSC title), else the shell's name ("zsh").
+    pub fn tab_label(&self) -> String {
+        label_from(self.title.lock().unwrap().as_deref(), shell_name())
+    }
+
+    /// The sidebar and terminal-header label: the shell's OSC title, else `$ <folder>`. Parts 3
+    /// and 5 replace it.
     pub fn label(&self) -> String {
-        label_from(self.title.lock().unwrap().as_deref(), &shell_name())
+        if let Some(t) = self.title.lock().unwrap().as_ref().filter(|t| !t.trim().is_empty()) {
+            // Shells set `user@host:~/a/b`; the sidebar only needs `$ b`.
+            let t = t.trim();
+            let path = match t.split_once(':') {
+                Some((who, rest)) if who.contains('@') => rest.trim(),
+                _ => t,
+            };
+            if path.starts_with('~') || path.starts_with('/') {
+                let last = path.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path);
+                return format!("$ {last}");
+            }
+            return t.to_string();
+        }
+        let folder = self.cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
+        format!("$ {folder}")
     }
 }
 
-/// The default shell's name, from `$SHELL`.
-fn shell_name() -> String {
-    let shell = std::env::var("SHELL").unwrap_or_default();
-    shell.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("shell").to_string()
+/// The default shell's name, from `$SHELL` (read once).
+fn shell_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        shell.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("shell").to_string()
+    })
 }
 
 /// A tab label from the shell's OSC title: `go test ./...` stays as is; `user@host:~/a/b` (what
-/// shells set at the prompt) shortens to `b`; no title falls back to the shell's name.
+/// shells set at the prompt) shortens to `b`; control characters are dropped; no title falls back
+/// to the shell's name.
 fn label_from(title: Option<&str>, shell: &str) -> String {
-    let Some(t) = title.map(str::trim).filter(|t| !t.is_empty()) else { return shell.to_string() };
+    let clean: String = title.unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+    let t = clean.trim();
+    if t.is_empty() { return shell.to_string(); }
     let path = match t.split_once(':') {
         Some((who, rest)) if who.contains('@') => rest.trim(),
         _ => t,
     };
     if path.starts_with('~') || path.starts_with('/') {
-        return path.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path).to_string();
+        let last = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        return if !last.is_empty() { last.to_string() } else { "/".to_string() };
     }
     t.to_string()
 }
@@ -208,5 +235,14 @@ mod tests {
         assert_eq!(label_from(Some("me@host:~/code/contr"), "zsh"), "contr");
         assert_eq!(label_from(Some("~/code/"), "zsh"), "code");
         assert_eq!(label_from(Some("/"), "zsh"), "/");
+        assert_eq!(label_from(Some("me@host:~"), "zsh"), "~");
+        assert_eq!(label_from(Some("user@host://"), "zsh"), "/");
+    }
+
+    #[test]
+    fn label_drops_control_characters() {
+        assert_eq!(label_from(Some("go\x07 test\x1b"), "zsh"), "go test");
+        assert_eq!(label_from(Some("\x07\x1b"), "zsh"), "zsh");
+        assert_eq!(label_from(Some(""), "zsh"), "zsh");
     }
 }

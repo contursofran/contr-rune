@@ -642,6 +642,7 @@ name = "contr-rune"
 version = "0.0.1"
 dependencies = [
  "alacritty_terminal",
+ "png 0.17.16",
  "portable-pty",
  "rune",
  "serde_json",
