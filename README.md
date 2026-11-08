@@ -36,6 +36,7 @@ at build time. Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` b
 | Ctrl+Shift+T | ⌘T | New tab in the selected project |
 | Ctrl+Shift+W | ⌘W | Close tab |
 | Ctrl+Shift+B | ⌘B | Show or hide the files panel |
+| Ctrl+Shift+, | ⌘, | Open settings (Esc closes) |
 | Ctrl+Tab | Ctrl+Tab | Next tab |
 | Ctrl+Shift+Tab | Ctrl+Shift+Tab | Previous tab |
 | Ctrl+PageDown / Ctrl+PageUp | same | Next / previous tab |
@@ -43,6 +44,15 @@ at build time. Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` b
 | Shift+PageUp / PageDown | same | Scroll back |
 
 Everything else, Ctrl keys included, goes to the shell.
+
+## Appearance
+
+Settings (the gear at the foot of the sidebar, or the key above) has an Appearance choice: System,
+Dark or Light. System follows the OS appearance live; Dark and Light are `Kit::neutral(true)` and
+`Kit::neutral(false)`, and the whole app, terminal included, switches without a restart. The choice is
+kept in `~/Library/Application Support/contr-rune/settings.json` on macOS and
+`$XDG_CONFIG_HOME/contr-rune/settings.json` (default `~/.config`) elsewhere; a missing or broken file
+means System. `CONTR_SETTINGS=<file>` uses another file.
 
 ## Check without a window
 

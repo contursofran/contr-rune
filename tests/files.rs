@@ -74,6 +74,7 @@ fn run(project: &Path, events: Vec<Value>) -> Value {
     let (script, out) = (dir.join("script.json"), dir.join("tree.json"));
     std::fs::write(&script, json!({ "events": events }).to_string()).unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
+        .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
         .env("CONTR_PROJECTS", project)
         .args(["--script", script.to_str().unwrap(), "--tree", out.to_str().unwrap(), "--size", "1710x1112", "--scale", "1", "--scene", "three-tabs"])
         .output()

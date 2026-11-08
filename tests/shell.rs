@@ -10,6 +10,7 @@ use serde_json::Value;
 fn tree(name: &str) -> Value {
     let out = std::env::temp_dir().join(format!("contr-rune-{name}-{}.json", std::process::id()));
     let run = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
+        .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
         .args(["--tree", out.to_str().unwrap(), "--size", "1710x1112", "--scale", "1", "--scene", "three-tabs", "--at", "1"])
         .output()
         .expect("run the app");

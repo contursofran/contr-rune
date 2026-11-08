@@ -45,6 +45,7 @@ fn run_with(fx: &Fixture, projects: &str, events: Vec<Value>) -> Value {
     let out = fx.root.join("tree.json");
     std::fs::write(&script, json!({ "events": events }).to_string()).unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
+        .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
         .env("CONTR_PROJECTS", projects)
         .args([
             "--script", script.to_str().unwrap(),

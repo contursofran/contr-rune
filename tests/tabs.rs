@@ -12,6 +12,7 @@ fn run(name: &str, events: Vec<Value>) -> Value {
     let out = dir.join(format!("contr-rune-{name}-{}.tree.json", std::process::id()));
     std::fs::write(&script, json!({ "events": events }).to_string()).unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
+        .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
         .args([
             "--script", script.to_str().unwrap(),
             "--tree", out.to_str().unwrap(),
