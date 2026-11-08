@@ -5,11 +5,13 @@
 //!
 //! `CONTR_PROJECTS=~/a:~/b cargo run` opens those folders as projects (default: the current
 //! folder and home). Shortcuts: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Tab /
-//! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS).
+//! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS), Ctrl+Shift+F find
+//! (⌘F; ⌘G / ⌘⇧G or Return / Shift+Return step, esc closes).
 
 mod dialog;
 mod diff;
 mod files;
+mod find;
 mod grid;
 mod keys;
 mod session;
@@ -25,11 +27,12 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
 use rune_kit::shell::{TabDragState, TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
-use rune_kit::{Button, ButtonVariant, ControlSize, FileNode, IconButton, IconButtonVariant, Kit, State, Tree, TreeItem, TreeStyle};
+use rune_kit::{Button, ButtonVariant, ControlSize, FileNode, IconButton, IconButtonVariant, Kit, State, TextInput, Tree, TreeItem, TreeStyle};
 use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, row, spacer, text};
 
 use diff::DiffSummary;
 use files::{Change, Kind, Scan};
+use find::Find;
 use session::{Session, Size, now_ms};
 use settings::Appearance;
 use theme::*;
@@ -94,6 +97,8 @@ struct App {
     tree: files::Model,
     /// The files panel shows only changed files and their folders.
     changed_only: bool,
+    /// The find bar over the terminal (⌘F).
+    find: Find,
 }
 
 fn init() -> App {
@@ -144,6 +149,7 @@ fn init() -> App {
         diff_rx,
         tree: files::empty(),
         changed_only: false,
+        find: Find::new(),
     }
 }
 
@@ -180,6 +186,8 @@ impl App {
         let project = t.project;
         self.selected_project = project;
         self.projects[project].last_tab = Some(id);
+        // The find bar belongs to one terminal: another tab starts clean.
+        if self.active != Some(id) { self.find.close(); }
         self.active = Some(id);
     }
 
@@ -188,7 +196,7 @@ impl App {
         let last = self.projects[project].last_tab.filter(|id| self.tabs.iter().any(|t| t.session.id == *id));
         match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id)) {
             Some(id) => self.select_tab(id),
-            None => self.active = None,
+            None => { self.active = None; self.find.close(); }
         }
     }
 
@@ -203,7 +211,7 @@ impl App {
             let rest: Vec<u64> = self.project_tabs(project).map(|t| t.session.id).collect();
             match rest.get(pos.min(rest.len().saturating_sub(1))) {
                 Some(next) => self.select_tab(*next),
-                None => self.active = None,
+                None => { self.active = None; self.find.close(); }
             }
         }
     }
@@ -308,6 +316,66 @@ impl App {
         self.show_files = !self.show_files;
     }
 
+    /// Open the find bar with focus in the input and the old query selected.
+    fn open_find(&mut self) {
+        if self.active.is_none() { return; }
+        self.find.open = true;
+        self.find.edit.focused = true;
+        self.find.edit.anchor = 0;
+        self.find.edit.focus = self.find.edit.text.len();
+        self.find_retarget();
+    }
+
+    /// The query changed: the current match becomes the first one in view, and the view follows.
+    fn find_retarget(&mut self) {
+        let Some(t) = self.active_tab() else { return };
+        let (cur, delta) = {
+            let term = t.session.term.lock().unwrap();
+            let m = find::matches(&term, self.find.query());
+            if m.is_empty() { (0, 0) } else {
+                let cur = find::first_in_view(&m, term.grid().display_offset());
+                (cur, find::scroll_delta(&term, &m[cur]))
+            }
+        };
+        if delta != 0 { t.session.scroll(delta); }
+        self.find.current = cur;
+    }
+
+    /// Move to the next or previous match, wrapping, and scroll it into view.
+    fn find_step(&mut self, forward: bool) {
+        let Some(t) = self.active_tab() else { return };
+        let (cur, delta) = {
+            let term = t.session.term.lock().unwrap();
+            let m = find::matches(&term, self.find.query());
+            let Some(cur) = find::step(self.find.current, m.len(), forward) else { return };
+            (cur, find::scroll_delta(&term, &m[cur]))
+        };
+        if delta != 0 { t.session.scroll(delta); }
+        self.find.current = cur;
+    }
+
+    /// Keys of the find bar, from the input and from the window. True when the key was used.
+    fn find_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if is_shortcut(ev, 'f') {
+            self.open_find();
+            return true;
+        }
+        if !self.find.open { return false; }
+        // Next is ⌘G or Return; previous adds Shift. Off macOS the chord already holds Shift, so Alt marks previous. F3 works everywhere.
+        let back_chord = if cfg!(target_os = "macos") { ev.mods.shift } else { ev.mods.alt };
+        match ev.key {
+            Key::Escape => {
+                self.find.close();
+                tx.blur();
+            }
+            Key::Enter => self.find_step(!ev.mods.shift),
+            Key::Function(3) => self.find_step(!ev.mods.shift),
+            _ if is_shortcut(ev, 'g') => self.find_step(!back_chord),
+            _ => return false,
+        }
+        true
+    }
+
     fn paste(&mut self, text: &str) {
         let Some(t) = self.active_tab() else { return };
         let bracketed = t.session.term.lock().unwrap().mode().contains(TermMode::BRACKETED_PASTE);
@@ -409,6 +477,9 @@ fn is_shortcut(ev: &KeyEvent, c: char) -> bool {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if s.find_key(ev, tx) {
+        return true;
+    }
     if is_shortcut(ev, 't') {
         s.open_tab(s.selected_project);
         return true;
@@ -437,6 +508,8 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::PageDown if ev.mods.shift => { scroll_active(s, -(s.size.rows as i32 - 1)); return true; }
         _ => {}
     }
+    // With the bar open, typing belongs to its input (it has the focus; a click elsewhere drops it, not the bar).
+    if s.find.open { return false; }
     let Some(t) = s.active_tab() else { return false };
     let mode = *t.session.term.lock().unwrap().mode();
     match keys::bytes(ev, mode) {
@@ -544,9 +617,18 @@ fn trailing(k: &Kit, s: &App) -> Vec<El> {
         );
     }
     let icon = |i: &'static Icon, label: &str| IconButton::new(i).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Large).label(label.to_owned());
-    // Split and search have no action yet; they keep their place and tooltip.
+    // Split has no action yet; it keeps its place and tooltip.
     items.push(icon(&SPLIT, "Split terminal").help("Split terminal").build(k).key("split"));
-    items.push(icon(&SEARCH, "Search").help("Search").build(k).key("search"));
+    let find_chord = if cfg!(target_os = "macos") { "cmd+f" } else { "ctrl+shift+f" };
+    items.push(
+        icon(&SEARCH, "Search")
+            .help("Search")
+            .shortcut(find_chord)
+            .state(if s.find.open { State::Pressed } else { State::Rest })
+            .on_press(|s: &mut App| s.open_find())
+            .build(k)
+            .key("search"),
+    );
     let label = if s.show_files { "Hide files" } else { "Show files" };
     let chord = if cfg!(target_os = "macos") { "cmd+b" } else { "ctrl+shift+b" };
     items.push(
@@ -646,9 +728,12 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
             .child(label("No terminal in this project", k.ty.ui, c.text_faint))
             .child(label("+ or Ctrl+Shift+T opens one", k.ty.text_xsmall, c.icon_faint));
     };
-    let lines = {
+    let (total, lines) = {
         let term = t.session.term.lock().unwrap();
-        grid::lines(&term, s.focused, &grid::Ink::from_kit(k))
+        let matches = if s.find.open { find::matches(&term, s.find.query()) } else { Vec::new() };
+        let current = (!matches.is_empty()).then(|| s.find.current.min(matches.len() - 1));
+        let lines = grid::lines(&term, s.focused, &grid::Ink::from_kit(k), &matches, current);
+        (matches.len(), lines)
     };
     let mut grid_el = col()
         .key("grid")
@@ -673,15 +758,73 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
     }
 
     // The grid sits directly in the card, padded as the target (14 top, 20 sides, 12 bottom).
-    shell::terminal_panel(k).child(
+    let panel = shell::terminal_panel(k).child(
         col().key("terminal/body").grow(1.0).min_h(0.0).w_full().pt(PANEL_PAD_TOP).px(PANEL_PAD_X).pb(PANEL_PAD_BOTTOM).child(grid_el),
-    )
+    );
+    if s.find.open { panel.child(find_bar(k, s, total)) } else { panel }
+}
+
+/// The floating find bar at the top right of the terminal card: the input, "3 of 12", previous,
+/// next and close. Keys: `find`, `find/input`, `find/count`, `find/prev`, `find/next`, `find/close`.
+fn find_bar(k: &Kit, s: &App, total: usize) -> El {
+    let c = &k.c;
+    let count = find::count_label(s.find.query(), s.find.current, total);
+    let input = TextInput::new(&s.find.edit)
+        .placeholder("Find")
+        .label("Find in terminal")
+        .width(Some(180.0))
+        .on_edit(|s: &mut App| &mut s.find.edit)
+        .on_change(|s: &mut App, _tx| s.find_retarget())
+        .on_key(|s: &mut App, ev: &KeyEvent, tx| s.find_key(ev, tx))
+        .build(k)
+        .key("find/input");
+    let button = |icon: &'static Icon, label: &'static str, enabled: bool| {
+        IconButton::new(icon)
+            .variant(IconButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .label(label)
+            .help(label)
+            .disabled(!enabled)
+    };
+    let mut bar = row()
+        .key("find")
+        .role("search")
+        .pin(None, Some(10.0), Some(12.0), None)
+        .px(4.0)
+        .pt(4.0)
+        .pb(4.0)
+        .gap(4.0)
+        .center_y()
+        .radius(k.radius.lg)
+        .fill(c.layer_01)
+        .border(1.0, c.border_muted)
+        .child(input)
+        .child(text(count).key("find/count").font(k.ty.text_small).color(c.text_muted).w(64.0).px(4.0))
+        .child(button(&rune_kit::glyphs::CHEVRON_UP, "Previous match", total > 0).on_press(|s: &mut App| s.find_step(false)).build(k).key("find/prev"))
+        .child(button(&rune_kit::glyphs::CHEVRON_DOWN, "Next match", total > 0).on_press(|s: &mut App| s.find_step(true)).build(k).key("find/next"))
+        .child(
+            button(&rune_kit::glyphs::CLOSE, "Close search", true)
+                .on_press_tx(|s: &mut App, tx: &mut Tx| { s.find.close(); tx.blur(); })
+                .build(k)
+                .key("find/close"),
+        );
+    for shadow in k.shadow_layers(&k.elevation.overlay) {
+        bar = bar.box_shadow(shadow);
+    }
+    bar
 }
 
 /// Typed into the shell by the `ansi` scene: the 16 colours as text, dim, bold, inverse, black text.
 const ANSI_DEMO: &str = concat!(
     "clear; for i in 0 1 2 3 4 5 6 7; do printf \"\\033[3${i}m color-$i \\033[9${i}m bright-$i \\033[0m\"; done; echo; ",
     "printf '\\033[2mdim text\\033[0m \\033[1mbold\\033[0m \\033[7minverse\\033[0m \\033[30mblack text\\033[0m \\033[90mbright black\\033[0m\\n'\r"
+);
+
+/// Typed into the shell by the `find` scenes: four lines hold "error" in different cases (the word is
+/// split in the command, so its echo does not match), the others do not.
+const FIND_DEMO: &str = concat!(
+    "clear; printf '%s%s: unable to resolve import\\n%s%s: expected semicolon\\nwarning: unused variable\\n",
+    "%s%s: type mismatch\\n%s%s: file not found\\nall done\\n' err or ERR OR Err or err or\r"
 );
 
 #[cfg(test)]
@@ -730,6 +873,21 @@ fn main() {
                 s.open_tab(0);
                 if let Some(t) = s.active_tab() { t.session.write(ANSI_DEMO.as_bytes()); }
                 s.refresh_diff_now();
+            }),
+            // One shell with known text, the find bar closed (the tests type the query).
+            ("find-text", |s| {
+                s.open_tab(0);
+                if let Some(t) = s.active_tab() { t.session.write(FIND_DEMO.as_bytes()); }
+                s.refresh_diff_now();
+            }),
+            // The same, with the find bar open on "error": every match filled, the first one stronger.
+            ("find", |s| {
+                s.open_tab(0);
+                if let Some(t) = s.active_tab() { t.session.write(FIND_DEMO.as_bytes()); }
+                s.refresh_diff_now();
+                s.open_find();
+                s.find.edit.replace_text("error");
+                s.find.edit.focused = true;
             }),
         ],
         ..AppSpec::new("contr", (1280.0, 800.0), init, view)

@@ -204,7 +204,8 @@ fn the_toggle_shows_its_pressed_state_and_the_other_buttons_have_help() {
     let off = run(&[&plain], vec![tap(0.2, "files-toggle")]);
     assert_ne!(find(&on, "files-toggle").unwrap()["fill"], find(&off, "files-toggle").unwrap()["fill"], "pressed fill differs");
     assert_eq!(find(&on, "split").unwrap()["help"], "Split terminal");
-    assert_eq!(find(&on, "search").unwrap()["help"], "Search");
+    // Search carries its shortcut too ("Search  ⌘F").
+    assert!(find(&on, "search").unwrap()["help"].as_str().unwrap().starts_with("Search"));
     // The tooltip carries the shortcut after the text ("Hide files  ⌘B").
     assert!(find(&on, "files-toggle").unwrap()["help"].as_str().unwrap().starts_with("Hide files"));
     assert!(find(&off, "files-toggle").unwrap()["help"].as_str().unwrap().starts_with("Show files"));
