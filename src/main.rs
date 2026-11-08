@@ -7,11 +7,13 @@
 //! folder and home). Shortcuts: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Tab /
 //! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS).
 
+mod dialog;
 mod diff;
 mod files;
 mod grid;
 mod keys;
 mod session;
+mod settings;
 mod shell;
 mod sidebar;
 mod theme;
@@ -29,6 +31,7 @@ use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, c
 use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use session::{Session, Size, now_ms};
+use settings::Appearance;
 use theme::*;
 
 /// The diff summary is refreshed at most this often (a new project selection refreshes at once).
@@ -70,8 +73,10 @@ struct App {
     error: Option<String>,
     /// Drag state of the title bar's tab strip.
     tab_drag: TabDragState,
-    /// The one kit every view reads colours, type and radius from.
-    kit: Kit,
+    /// Dark, light or the system's; the view builds its one kit from it.
+    appearance: Appearance,
+    /// The settings dialog is open.
+    settings_open: bool,
     /// Whether the files panel is shown (⌘B).
     show_files: bool,
     /// The selected project's working-tree summary; `None` when it is not a repo or has no changes.
@@ -127,7 +132,8 @@ fn init() -> App {
         focused: true,
         error: None,
         tab_drag: TabDragState::new(),
-        kit: Kit::neutral(true),
+        appearance: settings::load(),
+        settings_open: false,
         show_files: true,
         diff: None,
         diff_for: None,
@@ -289,6 +295,14 @@ impl App {
         });
     }
 
+    /// Take a new appearance and keep it in the settings file.
+    fn set_appearance(&mut self, a: Appearance) {
+        self.appearance = a;
+        if let Err(e) = settings::save(a) {
+            self.error = Some(format!("couldn't save the settings: {e}"));
+        }
+    }
+
     /// Show or hide the files panel; the terminal card takes the freed width.
     fn toggle_files(&mut self) {
         self.show_files = !self.show_files;
@@ -407,6 +421,10 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.toggle_files();
         return true;
     }
+    if is_shortcut(ev, ',') {
+        s.settings_open = true;
+        return true;
+    }
     if is_shortcut(ev, 'v') {
         tx.read_clipboard(|s: &mut App, content, _tx| s.paste(content.text()));
         return true;
@@ -434,9 +452,13 @@ fn scroll_active(s: &mut App, lines: i32) {
 // ───────────────────────────── view ─────────────────────────────
 
 fn view(s: &App, cx: &mut Cx<App>) -> El {
-    let k = &s.kit;
+    let kit = Kit::neutral(s.appearance.is_dark(cx.system_dark()));
+    let k = &kit;
     let mut layer = Vec::new();
     let bar = title_bar(k, s, cx, &mut layer);
+    if s.settings_open {
+        dialog::build(k, s, &mut layer);
+    }
     shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
 }
@@ -683,6 +705,21 @@ fn main() {
         on_key: Some(on_key),
         scenes: &[
             ("three-tabs", |s| {
+                s.open_tab(0);
+                s.open_tab(0);
+                s.open_tab(0);
+                s.refresh_diff_now();
+            }),
+            // The settings dialog open, in dark.
+            ("settings", |s| {
+                s.appearance = Appearance::Dark;
+                s.settings_open = true;
+                s.open_tab(0);
+                s.refresh_diff_now();
+            }),
+            // The whole app in the light theme, the dialog closed.
+            ("light", |s| {
+                s.appearance = Appearance::Light;
                 s.open_tab(0);
                 s.open_tab(0);
                 s.open_tab(0);

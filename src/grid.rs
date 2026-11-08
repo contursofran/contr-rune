@@ -11,7 +11,7 @@ use rune_kit::Kit;
 use crate::session::Events;
 use crate::theme;
 
-/// The default colours of the grid, taken from the kit; the ANSI palette below stays fixed.
+/// The default colours of the grid, taken from the kit; the ANSI palette follows its light or dark.
 #[derive(Clone, Copy)]
 pub struct Ink {
     /// Default text and the focused cursor block.
@@ -22,11 +22,20 @@ pub struct Ink {
     pub bg: Color,
     /// The unfocused cursor.
     pub selected: Color,
+    /// Dark kit: picks the dark or the light ANSI palette.
+    pub dark: bool,
+}
+
+impl Ink {
+    /// How far SGR dim text moves toward the panel: less on the light panel, where the mix loses contrast faster.
+    fn dim_mix(&self) -> f32 {
+        if self.dark { 0.4 } else { 0.25 }
+    }
 }
 
 impl Ink {
     pub fn from_kit(k: &Kit) -> Ink {
-        Ink { text: k.c.text_base, dim: k.c.text_muted, bg: k.c.bg_base, selected: k.c.pressed }
+        Ink { text: k.c.text_base, dim: k.c.text_muted, bg: k.c.bg_base, selected: k.c.pressed, dark: k.dark }
     }
 }
 
@@ -37,18 +46,25 @@ pub struct Line {
 }
 
 /// The 16 ANSI colours (muted; bright black is lifted so hints stay readable on the kit panel).
-const ANSI: [u32; 16] = [
+const ANSI_DARK: [u32; 16] = [
     0x1c1c1c, 0xf07178, 0xa6d189, 0xe5c07b, 0x82aaff, 0xc792ea, 0x89ddff, 0xbdbdbd,
     0x808080, 0xff8b92, 0xc3e88d, 0xffcb6b, 0x9cc4ff, 0xddb3f5, 0xa3ebff, 0xededed,
+];
+
+/// The 16 ANSI colours for the light panel: darker, so each reads on white (contrast 3 or more,
+/// bright black 4 or more).
+const ANSI_LIGHT: [u32; 16] = [
+    0x2b2b2b, 0xc4313b, 0x3a7d27, 0x8f6200, 0x2a5fd1, 0x8e3fc0, 0x0a7489, 0x6b6b6b,
+    0x6a6a6a, 0xd0404b, 0x2f7a1f, 0x946500, 0x2f65e0, 0x9a45cf, 0x0b7a90, 0x4a4a4a,
 ];
 
 use theme::{srgb as rgb, srgb8};
 
 fn from_rgb(c: Rgb) -> Color { srgb8(c.r, c.g, c.b) }
 
-fn indexed(i: u8) -> Color {
+fn indexed(i: u8, dark: bool) -> Color {
     match i {
-        0..=15 => rgb(ANSI[i as usize]),
+        0..=15 => rgb(if dark { ANSI_DARK } else { ANSI_LIGHT }[i as usize]),
         16..=231 => {
             let i = i - 16;
             let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
@@ -69,7 +85,7 @@ fn is_black(c: AColor) -> bool {
 fn resolve(c: AColor, colors: &Colors, fg: bool, ink: &Ink) -> Color {
     match c {
         AColor::Spec(rgb) => from_rgb(rgb),
-        AColor::Indexed(i) => colors[i as usize].map(from_rgb).unwrap_or_else(|| indexed(i)),
+        AColor::Indexed(i) => colors[i as usize].map(from_rgb).unwrap_or_else(|| indexed(i, ink.dark)),
         AColor::Named(n) => {
             if let Some(set) = colors[n] { return from_rgb(set); }
             match n {
@@ -77,11 +93,11 @@ fn resolve(c: AColor, colors: &Colors, fg: bool, ink: &Ink) -> Color {
                 NamedColor::DimForeground => ink.dim,
                 NamedColor::Background => ink.bg,
                 NamedColor::Cursor => ink.text,
-                n if (n as usize) < 16 => indexed(n as u8),
+                n if (n as usize) < 16 => indexed(n as u8, ink.dark),
                 // Dim variants: the normal colour, dimmed.
                 n if (n as usize) >= NamedColor::DimBlack as usize => {
                     let base = n as usize - NamedColor::DimBlack as usize;
-                    indexed(base as u8).mix(ink.bg, 0.35)
+                    indexed(base as u8, ink.dark).mix(ink.bg, 0.35)
                 }
                 _ => if fg { ink.text } else { ink.bg },
             }
@@ -117,13 +133,14 @@ pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink) -> Vec<Line> {
 
         let (mut fg, mut bg) = (resolve(cell.fg, colors, true, ink), resolve(cell.bg, colors, false, ink));
         let mut has_bg = !matches!(cell.bg, AColor::Named(NamedColor::Background));
-        // Black text on the panel would vanish; lift it to bright black. Black on a set background stays.
-        if !has_bg && !cell.flags.contains(Flags::INVERSE) && is_black(cell.fg) { fg = indexed(8); }
+        // Black text on the dark panel would vanish; lift it to bright black. Black on a set background
+        // stays, and on the light panel black reads as it is.
+        if ink.dark && !has_bg && !cell.flags.contains(Flags::INVERSE) && is_black(cell.fg) { fg = indexed(8, true); }
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
             has_bg = true;
         }
-        if cell.flags.contains(Flags::DIM) { fg = fg.mix(ink.bg, 0.4); }
+        if cell.flags.contains(Flags::DIM) { fg = fg.mix(ink.bg, ink.dim_mix()); }
         let is_cursor = show_cursor && cell.point == cursor;
         if is_cursor {
             if focused {
@@ -181,13 +198,15 @@ mod tests {
 
     #[test]
     fn ansi_palette_is_readable_on_the_kit_panel() {
-        let ink = Ink::from_kit(&Kit::neutral(true));
+        for dark in [true, false] {
+        let ink = Ink::from_kit(&Kit::neutral(dark));
         for i in 0..16u8 {
-            let ratio = contrast(indexed(i), ink.bg);
+            let ratio = contrast(indexed(i, dark), ink.bg);
             eprintln!("ansi {i}: {ratio:.2}");
             // Black (0) is for backgrounds and may sit close to the panel; the rest must read.
-            let min = if i == 0 { 1.0 } else { 3.0 };
-            assert!(ratio >= min, "ansi {i} contrast {ratio:.2} < {min}");
+            let min = if i == 0 && dark { 1.0 } else { 3.0 };
+            assert!(ratio >= min, "{} ansi {i} contrast {ratio:.2} < {min}", if dark { "dark" } else { "light" });
+        }
         }
     }
 
@@ -201,12 +220,15 @@ mod tests {
 
     #[test]
     fn dim_and_bright_black_text_stay_visible() {
-        let ink = Ink::from_kit(&Kit::neutral(true));
-        // Bright black (ANSI 8) is what shells use for hints and autosuggestions.
-        assert!(contrast(indexed(8), ink.bg) >= 4.0, "bright black {:.2}", contrast(indexed(8), ink.bg));
-        // SGR dim mixes the text 40% toward the panel; it must still be legible.
-        let dimmed = ink.text.mix(ink.bg, 0.4);
-        assert!(contrast(dimmed, ink.bg) >= 4.0, "dim {:.2}", contrast(dimmed, ink.bg));
-        assert!(contrast(ink.dim, ink.bg) >= 4.0);
+        for dark in [true, false] {
+            let ink = Ink::from_kit(&Kit::neutral(dark));
+            // Bright black (ANSI 8) is what shells use for hints and autosuggestions.
+            assert!(contrast(indexed(8, dark), ink.bg) >= 4.0, "dark={dark} bright black {:.2}", contrast(indexed(8, dark), ink.bg));
+            // SGR dim mixes the text toward the panel; it must still be legible.
+            let dimmed = ink.text.mix(ink.bg, ink.dim_mix());
+            let min = if dark { 4.0 } else { 3.0 };
+            assert!(contrast(dimmed, ink.bg) >= min, "dark={dark} dim {:.2}", contrast(dimmed, ink.bg));
+            assert!(contrast(ink.dim, ink.bg) >= 4.0, "dark={dark} dim text");
+        }
     }
 }
