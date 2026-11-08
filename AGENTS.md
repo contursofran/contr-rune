@@ -63,4 +63,4 @@ Before you open the PR: `cargo build` with no warnings and `cargo test` pass.
 - The PR description says what matches the design, what does not, and why (for example a Rune limit). It
   holds the tree numbers against the spec.
 - No `Co-Authored-By`, AI attribution or "Generated with" lines in commits or PRs.
-- Flow: builder opens the PR → reviewer checks it → fixes → the owner runs it in a real window → merge.
+- Flow: builder opens the PR → the owner runs it in a real window → fixes → merge. No reviewer agent in this repo (owner, 2026-11-08): the headless `--snap`, `--tree` and `--script` checks and tests replace it.
