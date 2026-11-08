@@ -188,8 +188,10 @@ pub const RADIUS_12: f32 = 12.0;
 pub const RADIUS_14: f32 = 14.0;
 
 pub const TITLEBAR_HEIGHT: f32 = 38.0;
-pub const SIDEBAR_WIDTH: f32 = 312.0;
-pub const FILES_WIDTH: f32 = 280.0;
+/// Outer widths, as the reference renders them (CSS without `box-sizing`): 312 / 280 content
+/// plus padding and border. The sidebar ends at x=342, under the title bar's left area.
+pub const SIDEBAR_WIDTH: f32 = 334.0;
+pub const FILES_WIDTH: f32 = 302.0;
 pub const ROW_HEIGHT: f32 = 30.0;
 pub const FILE_ROW_HEIGHT: f32 = 26.0;
 pub const ICON_BUTTON: f32 = 28.0;
@@ -230,5 +232,43 @@ pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
 ];
-pub const FAMILIES: (&str, &str) = ("Inter", "JetBrains Mono");
+pub const FAMILIES: (&str, &str) = ("Inter", "JetBrains Mono, JetBrainsMono Nerd Font, ui-monospace");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn near(a: f32, b: f32) -> bool { (a - b).abs() < 1e-4 }
+
+    #[test]
+    fn srgb_converts_to_linear() {
+        // sRGB 128 is 0.2158605 in linear light; the ends stay put.
+        assert!(near(srgb8(128, 128, 128).r, 0.215_860_5));
+        assert!(near(srgb8(0, 0, 0).g, 0.0));
+        assert!(near(srgb8(255, 255, 255).b, 1.0));
+        assert_eq!(srgb8(10, 20, 30).a, 1.0);
+    }
+
+    #[test]
+    fn alpha_is_kept() {
+        let t = Theme::dark();
+        assert!(near(t.panel.a, 0.85));
+        assert!(near(t.panel_line.a, 0.065));
+        assert!(near(t.ink_62.a, 0.62));
+        assert_eq!(t.ink_100.a, 1.0);
+    }
+
+    #[test]
+    fn window_solid_is_glass_over_ground() {
+        // rgba(20,21,24,.7) over #0a0b0d, composited in sRGB: about (17, 18, 21).
+        let w = Theme::dark().window_solid;
+        let back = |c: f32| {
+            let v = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+            (v * 255.0).round() as i32
+        };
+        assert_eq!([back(w.r), back(w.g), back(w.b)], [17, 18, 21]);
+        assert_eq!(w.a, 1.0);
+    }
+}

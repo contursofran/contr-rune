@@ -23,7 +23,7 @@ use rune::{AppSpec, Color, Cx, El, Key, KeyEvent, Tx, Waker, WheelEvent, col, el
 use session::{Session, Size, now_ms};
 use theme::*;
 
-/// Output within this long ago makes a terminal "working" (amber dot).
+/// Output within this long ago makes a terminal "working".
 const WORKING_MS: u64 = 1_500;
 
 struct Project {
@@ -220,7 +220,7 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
         })
         .collect();
     if statuses.iter().any(|(_, st)| *st == Status::Working) {
-        // Look again when the newest output turns quiet, to drop the amber dot.
+        // Look again when the newest output turns quiet, to drop the working dot.
         tx.wake_after(Duration::from_millis(500));
     }
     if statuses != s.statuses {
@@ -380,7 +380,7 @@ fn project_row(s: &App, i: usize, p: &Project) -> El {
     let count = s.project_tabs(i).count();
     let tile = el().size(20.0, 20.0).radius(5.0).fill(c.selected).border(1.0, c.selected_line).center()
         .child(label(initials(&p.name), SMALL, c.ink_62));
-    let add = el().key(format!("add-{i}")).size(20.0, 20.0).radius(5.0).center().hover(theme().press)
+    let add = el().key(format!("add-{i}")).size(20.0, 20.0).radius(5.0).center().hover(c.press)
         .role("button").label("New terminal here")
         .on_press(move |s: &mut App| s.open_tab(i))
         .child(label("+", ROW_SMALL, c.ink_42));
@@ -451,7 +451,7 @@ fn title_bar(s: &App) -> El {
         let id = t.session.id;
         let selected = s.active == Some(id);
         let close = el().key(format!("close-{id}")).size(16.0, 16.0).radius(4.0).center()
-            .hover(theme().press)
+            .hover(c.press)
             .role("button").label("Close tab")
             .on_press(move |s: &mut App| s.close_tab(id))
             .child(label("×", ROW_SMALL, if selected { c.ink_62 } else { c.ink_30 }));
@@ -471,13 +471,13 @@ fn title_bar(s: &App) -> El {
     }
     let project = s.selected_project;
     let plus = el().key("new-tab").size(28.0, 28.0).radius(6.0).center()
-        .hover(theme().hover_strong)
+        .hover(c.hover_strong)
         .role("button").label("New terminal")
         .on_press(move |s: &mut App| s.open_tab(project))
         .child(label("+", LABEL, c.ink_42));
     let name = s.projects.get(project).map(|p| p.name.clone()).unwrap_or_default();
     // The left area stays free for the macOS traffic lights; the tabs start after it.
-    row().h(TITLEBAR_HEIGHT).w_full().pr(SPACE_8).gap(6.0).items_center().window_drag()
+    row().h(TITLEBAR_HEIGHT).w_full().pr(SPACE_8).gap(SPACE_8).items_center().window_drag()
         .child(el().w(TITLEBAR_LEFT).h_full())
         .child(tabs)
         .child(plus)
@@ -550,6 +550,6 @@ fn main() {
         })],
         ..AppSpec::new("contr", (1280.0, 800.0), init, view)
     };
-    // The 38 px title bar is ours; the traffic lights sit in its left area (x 18, centred).
-    rune::App::new(spec).titlebar(rune::Titlebar::new(TITLEBAR_HEIGHT).traffic_lights(14.0, 12.0)).run();
+    // The 38 px title bar is ours; the traffic lights sit in its left area (first circle at x 18, centred).
+    rune::App::new(spec).titlebar(rune::Titlebar::new(TITLEBAR_HEIGHT).traffic_lights(17.0, 12.0)).run();
 }
