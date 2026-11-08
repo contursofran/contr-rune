@@ -177,3 +177,33 @@ fn another_tab_starts_without_the_bar() {
     let t = run("three-tabs", vec![tap(5.0, "search"), typed(5.5, "a"), tap(6.0, "new-tab")]);
     assert!(!bar_open(&t), "a new tab closes the bar and its highlights");
 }
+
+#[test]
+fn a_click_on_the_grid_gives_the_keys_back_to_the_shell_and_keeps_the_bar() {
+    let t = run(SCENE, vec![tap(5.0, "search"), typed(5.5, "error"), tap(6.0, "grid"), typed(6.5, "uname"), key(7.0, "Enter")]);
+    assert!(texts(&t).iter().any(|s| matches!(s.trim(), "Darwin" | "Linux")), "the shell got the keys");
+    assert!(bar_open(&t), "the bar stays open");
+    assert_eq!(count(&t), "1 of 4", "with its highlights");
+    assert!(!find(&t, "find/input").unwrap()["text"].as_str().unwrap_or("").contains("uname"), "the input did not get them");
+}
+
+#[test]
+fn after_a_grid_click_the_input_takes_the_keys_again_by_click_or_chord() {
+    // The input holds "error"; typing there appends.
+    let t = run(SCENE, vec![tap(5.0, "search"), typed(5.5, "error"), tap(6.0, "grid"), tap(6.5, "find/input"), typed(7.0, "zzq")]);
+    assert_eq!(count(&t), "No results", "a click on the input focuses it");
+    // The chord selects the old query, so typing replaces it.
+    let t = run(SCENE, vec![tap(5.0, "search"), typed(5.5, "error"), tap(6.0, "grid"), chord(6.5, "f", false), typed(7.0, "ERROR")]);
+    assert_eq!(count(&t), "1 of 4", "the chord focuses the input and selects the old query");
+}
+
+
+#[test]
+fn new_output_updates_the_count() {
+    // The search finds nothing at first; then the shell prints the answer of uname, which it finds.
+    let word = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+    let before = run(SCENE, vec![tap(5.0, "search"), typed(5.5, word)]);
+    assert_eq!(count(&before), "No results");
+    let after = run(SCENE, vec![tap(5.0, "search"), typed(5.5, word), tap(6.0, "grid"), typed(6.5, "uname"), key(7.0, "Enter")]);
+    assert_eq!(count(&after), "1 of 1", "new output is searched without touching the query");
+}

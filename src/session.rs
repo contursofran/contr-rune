@@ -70,6 +70,9 @@ pub struct Session {
     pub exited: Arc<AtomicBool>,
     /// Unix millis of the last output, for the "working" dot.
     pub last_output: Arc<AtomicU64>,
+    /// Counts every change of the screen's content (output, resize); the find bar's cached matches
+    /// are valid while it stays the same.
+    pub generation: Arc<AtomicU64>,
 }
 
 pub fn now_ms() -> u64 {
@@ -102,10 +105,11 @@ impl Session {
         let dirty = Arc::new(AtomicBool::new(true));
         let exited = Arc::new(AtomicBool::new(false));
         let last_output = Arc::new(AtomicU64::new(now_ms()));
+        let generation = Arc::new(AtomicU64::new(0));
 
         // Reader: PTY bytes → emulator → wake the window.
         {
-            let (term, dirty, exited, last_output) = (term.clone(), dirty.clone(), exited.clone(), last_output.clone());
+            let (term, dirty, exited, last_output, generation) = (term.clone(), dirty.clone(), exited.clone(), last_output.clone(), generation.clone());
             let waker = waker.clone();
             std::thread::Builder::new().name(format!("pty-{id}")).spawn(move || {
                 let mut reader = reader;
@@ -115,7 +119,11 @@ impl Session {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            parser.advance(&mut *term.lock().unwrap(), &buf[..n]);
+                            {
+                                let mut t = term.lock().unwrap();
+                                parser.advance(&mut *t, &buf[..n]);
+                                generation.fetch_add(1, Ordering::AcqRel);
+                            }
                             last_output.store(now_ms(), Ordering::Relaxed);
                             // Only wake when the UI has drawn the last batch: a flood of output
                             // collapses into one redraw per frame.
@@ -136,7 +144,7 @@ impl Session {
         // Reap the child so it doesn't linger as a zombie.
         std::thread::spawn(move || { let _ = child.wait(); });
 
-        Ok(Session { id, term, title, writer, master: pair.master, size, cwd: cwd.to_path_buf(), dirty, exited, last_output })
+        Ok(Session { id, term, title, writer, master: pair.master, size, cwd: cwd.to_path_buf(), dirty, exited, last_output, generation })
     }
 
     pub fn write(&self, bytes: &[u8]) {
@@ -158,6 +166,7 @@ impl Session {
         self.size = size;
         let _ = self.master.resize(PtySize { rows: size.rows, cols: size.cols, pixel_width: 0, pixel_height: 0 });
         self.term.lock().unwrap().resize(size);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         self.dirty.store(true, Ordering::Release);
     }
 

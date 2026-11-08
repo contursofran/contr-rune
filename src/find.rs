@@ -6,6 +6,8 @@
 //! view or a step needs them, so new output keeps the count live.
 
 use std::ops::RangeInclusive;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
@@ -22,11 +24,43 @@ pub struct Find {
     pub edit: TextEdit,
     /// The current match, an index into the matches (clamped when the count shrinks).
     pub current: usize,
+    cache: Mutex<Option<Cached>>,
+    /// How many times the regex search ran (tests read it to see that matches are reused).
+    runs: AtomicUsize,
+}
+
+/// The matches of one search and what they were found for.
+struct Cached {
+    terminal: u64,
+    generation: u64,
+    query: String,
+    matches: Arc<Vec<Match>>,
 }
 
 impl Find {
     pub fn new() -> Find {
-        Find { open: false, edit: TextEdit::new(""), current: 0 }
+        Find { open: false, edit: TextEdit::new(""), current: 0, cache: Mutex::new(None), runs: AtomicUsize::new(0) }
+    }
+
+    /// The matches of the query in terminal `terminal` (whose content is at `generation`): the last
+    /// search's when the query, the terminal and its generation are the same, else a new search.
+    pub fn matches<T: EventListener>(&self, terminal: u64, generation: u64, term: &Term<T>) -> Arc<Vec<Match>> {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(c) = cache.as_ref()
+            && c.terminal == terminal && c.generation == generation && c.query == self.query()
+        {
+            return c.matches.clone();
+        }
+        self.runs.fetch_add(1, Ordering::Relaxed);
+        let matches = Arc::new(matches(term, self.query()));
+        *cache = Some(Cached { terminal, generation, query: self.query().to_owned(), matches: matches.clone() });
+        matches
+    }
+
+    /// How many searches ran so far.
+    #[cfg(test)]
+    pub fn runs(&self) -> usize {
+        self.runs.load(Ordering::Relaxed)
     }
 
     /// Close the bar; its highlights go with it. The query stays for the next ⌘F.
@@ -34,6 +68,7 @@ impl Find {
         self.open = false;
         self.edit.focused = false;
         self.current = 0;
+        *self.cache.lock().unwrap() = None;
     }
 
     pub fn query(&self) -> &str {
@@ -208,6 +243,35 @@ mod tests {
         assert!(line + d >= 0 && line + d < 10, "the match lands on screen");
         let last = matches(&t, "line 29");
         assert_eq!(scroll_delta(&t, &last[0]), 0);
+    }
+
+    #[test]
+    fn matches_are_reused_until_the_query_the_terminal_or_the_output_changes() {
+        let mut f = Find::new();
+        f.edit.replace_text("foo");
+        let mut t = term(5, 40, "foo foo\r\n");
+        assert_eq!(f.matches(1, 0, &t).len(), 2);
+        assert_eq!(f.runs(), 1);
+        // Nothing changed (a redraw): no new search, the same matches.
+        let again = f.matches(1, 0, &t);
+        assert_eq!((again.len(), f.runs()), (2, 1));
+        // New output: the generation moves, the count follows.
+        let mut p: Processor = Processor::new();
+        p.advance(&mut t, b"foo\r\n");
+        assert_eq!(f.matches(1, 1, &t).len(), 3);
+        assert_eq!(f.runs(), 2);
+        // Another terminal, then another query.
+        f.matches(2, 1, &t);
+        assert_eq!(f.runs(), 3);
+        f.edit.replace_text("fo");
+        f.matches(2, 1, &t);
+        assert_eq!(f.runs(), 4);
+        f.matches(2, 1, &t);
+        assert_eq!(f.runs(), 4);
+        // Closing drops the cache.
+        f.close();
+        f.matches(2, 1, &t);
+        assert_eq!(f.runs(), 5);
     }
 
     #[test]

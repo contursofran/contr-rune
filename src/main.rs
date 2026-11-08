@@ -331,7 +331,7 @@ impl App {
         let Some(t) = self.active_tab() else { return };
         let (cur, delta) = {
             let term = t.session.term.lock().unwrap();
-            let m = find::matches(&term, self.find.query());
+            let m = self.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term);
             if m.is_empty() { (0, 0) } else {
                 let cur = find::first_in_view(&m, term.grid().display_offset());
                 (cur, find::scroll_delta(&term, &m[cur]))
@@ -346,7 +346,7 @@ impl App {
         let Some(t) = self.active_tab() else { return };
         let (cur, delta) = {
             let term = t.session.term.lock().unwrap();
-            let m = find::matches(&term, self.find.query());
+            let m = self.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term);
             let Some(cur) = find::step(self.find.current, m.len(), forward) else { return };
             (cur, find::scroll_delta(&term, &m[cur]))
         };
@@ -361,15 +361,17 @@ impl App {
             return true;
         }
         if !self.find.open { return false; }
+        // Return, esc and F3 belong to the shell while the input has no focus (after a click on the grid).
+        let focused = self.find.edit.focused;
         // Next is ⌘G or Return; previous adds Shift. Off macOS the chord already holds Shift, so Alt marks previous. F3 works everywhere.
         let back_chord = if cfg!(target_os = "macos") { ev.mods.shift } else { ev.mods.alt };
         match ev.key {
-            Key::Escape => {
+            Key::Escape if focused => {
                 self.find.close();
                 tx.blur();
             }
-            Key::Enter => self.find_step(!ev.mods.shift),
-            Key::Function(3) => self.find_step(!ev.mods.shift),
+            Key::Enter if focused => self.find_step(!ev.mods.shift),
+            Key::Function(3) if focused => self.find_step(!ev.mods.shift),
             _ if is_shortcut(ev, 'g') => self.find_step(!back_chord),
             _ => return false,
         }
@@ -508,8 +510,8 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::PageDown if ev.mods.shift => { scroll_active(s, -(s.size.rows as i32 - 1)); return true; }
         _ => {}
     }
-    // With the bar open, typing belongs to its input (it has the focus; a click elsewhere drops it, not the bar).
-    if s.find.open { return false; }
+    // While the bar's input has the focus, typing belongs to it.
+    if s.find.open && s.find.edit.focused { return false; }
     let Some(t) = s.active_tab() else { return false };
     let mode = *t.session.term.lock().unwrap().mode();
     match keys::bytes(ev, mode) {
@@ -730,7 +732,7 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
     };
     let (total, lines) = {
         let term = t.session.term.lock().unwrap();
-        let matches = if s.find.open { find::matches(&term, s.find.query()) } else { Vec::new() };
+        let matches = if s.find.open { s.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term) } else { Default::default() };
         let current = (!matches.is_empty()).then(|| s.find.current.min(matches.len() - 1));
         let lines = grid::lines(&term, s.focused, &grid::Ink::from_kit(k), &matches, current);
         (matches.len(), lines)
@@ -742,6 +744,13 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
         .w_full()
         .clip_rounded(0.0)
         .on_layout(|s: &mut App, [_, _, w, h]| s.set_grid_area(w, h))
+        // A click on the grid gives the keys back to the shell; the bar and its highlights stay.
+        .on_press_tx(|s: &mut App, tx: &mut Tx| {
+            if s.find.open {
+                s.find.edit.focused = false;
+                tx.blur();
+            }
+        })
         .on_wheel(|s: &mut App, ev: WheelEvent, _tx| {
             s.wheel += ev.dy;
             let lines = (s.wheel / LINE_H).trunc();
