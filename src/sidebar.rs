@@ -11,7 +11,7 @@ use rune::{El, FileDialogOptions, Icon, el, icon, row, spacer, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
 
-use crate::session::{now_ms, shell_name};
+use crate::session::now_ms;
 use crate::theme;
 use crate::{App, PLUS, Project, Status, TERM, shell};
 
@@ -34,6 +34,19 @@ static LAPTOP: Icon = Icon {
 
 /// A terminal row is two lines (title, mono subtitle) under its project.
 const TERMINAL_ROW_HEIGHT: f32 = 48.0;
+
+/// The branch meta gets at most this width and this many characters; the project name keeps the rest.
+const META_MAX_W: f32 = 96.0;
+const META_MAX_CHARS: usize = 14;
+
+/// `s` cut to `max` characters, ending in `…` when it was longer.
+pub fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let head: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
+}
 
 /// A project's name: its folder's name, `/` for the root.
 pub fn folder_name(path: &Path) -> String {
@@ -103,23 +116,30 @@ fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
     let meta = if empty { Some("nothing open".to_owned()) } else { branch_of(&p.path) };
     // Selected when it is the project with no terminal showing (a terminal row takes it otherwise).
     let selected = s.selected_project == i && s.active.is_none();
+    // The meta and the hover `+` share one slot at the row's right edge: the meta shows, and on
+    // hover it gives way to the `+` (no layout shift, no space kept for a hidden button).
     let add = icon_button(&PLUS, "New terminal here")
         .control_size(ControlSize::Small)
         .on_press(move |s: &mut App| s.open_tab(i))
         .build(k)
         .key(format!("add-{i}"))
+        .pin(None, Some(0.0), Some(0.0), None)
         .group_opacity(0.0, 1.0);
-    let mut r = SidebarRow::new(p.name.clone())
+    let mut slot = row().key("meta-slot").h(20.0).min_w(20.0).max_w(META_MAX_W).shrink().center_y();
+    if let Some(m) = meta {
+        slot = slot.child(
+            text(clip(&m, META_MAX_CHARS)).key("detail").font(k.ty.small).color(k.c.text_faint).truncate().group_opacity(1.0, 0.0),
+        );
+    }
+    SidebarRow::new(p.name.clone())
         .icon(&FOLDER)
         .height(theme::ROW_HEIGHT)
         .title_style(if empty { theme::BODY } else { theme::BODY_STRONG })
         .selected(selected)
-        .trailing(add)
-        .on_select(move |s: &mut App, _tx| s.select_project(i));
-    if let Some(m) = meta {
-        r = r.detail(m);
-    }
-    r.build(k).key(format!("project-{i}"))
+        .trailing(slot.child(add))
+        .on_select(move |s: &mut App, _tx| s.select_project(i))
+        .build(k)
+        .key(format!("project-{i}"))
 }
 
 fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
@@ -127,7 +147,6 @@ fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
     let age = now_ms().saturating_sub(t.session.last_output.load(Ordering::Relaxed)) / 1000;
     let mut r = SidebarRow::new(t.session.tab_title())
         .avatar(icon(&TERM, 16.0).color(k.c.icon_muted))
-        .subtitle(shell_name())
         .subtitle_style(theme::META)
         .title_style(theme::BODY)
         .detail(fmt_age(age))
@@ -135,6 +154,9 @@ fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
         .depth(1)
         .selected(s.active == Some(id))
         .on_select(move |s: &mut App, _tx| s.select_tab(id));
+    if let Some(sub) = t.session.subtitle() {
+        r = r.subtitle(sub);
+    }
     if s.status(id) == Status::Working {
         r = r.status(RowStatus::Busy);
     }
@@ -220,6 +242,14 @@ mod tests {
         // Not a repo.
         assert_eq!(branch_of(&dir.join("nope")), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn long_text_is_clipped_with_an_ellipsis() {
+        assert_eq!(clip("main", 14), "main");
+        assert_eq!(clip("worktree-agent-a562bb76be1982d77", 14), "worktree-agen…");
+        assert_eq!(clip("worktree-agen", 13), "worktree-agen");
+        assert_eq!(clip("ééé", 2), "é…");
     }
 
     #[test]
