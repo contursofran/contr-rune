@@ -1,21 +1,23 @@
 # contr-rune
 
-A small port of [contr](https://github.com/contursofran/contr)'s sidebar, terminal tabs and terminal
-to [Rune](https://github.com/anomalyco/rune), a GPU-rendered Rust UI framework. It's an experiment to
-see how Rune compares with GPUI and MyGo for this kind of app, not a replacement for contr.
+A small port of [contr](https://github.com/contursofran/contr) to [Rune](https://github.com/anomalyco/rune),
+a GPU-rendered Rust UI framework. It is built from **rune-kit** components on rune-kit's neutral theme.
+It is an experiment to see how Rune compares with GPUI and MyGo for this kind of app, not a replacement
+for contr.
 
-![contr-rune: projects with their terminals, tabs and a shell](docs/screenshot.png)
+![contr-rune: projects with their terminals, tabs, a shell and the files panel](docs/screenshot.png)
 
-- **Sidebar:** each project with its terminals under it, and a `+` to open one in that folder. Below,
-  the terminals grouped by state: **Working** (white dot, output in the last 1.5 s) and **Idle**
-  (hollow ring, with how long it's been quiet).
-- **Tabs:** the selected project's terminals, labelled `$ <folder>` from the shell's title, with a
-  working dot and `×`, plus `+` for a new one.
-- **Terminal:** a real login shell in a PTY, parsed by `alacritty_terminal` and drawn as one coloured
-  text row per line. Scrollback with the wheel or Shift+PageUp/PageDown. A tab closes when its
-  shell exits.
-
-Colours and type follow contr's tokens (`docs/DESIGN.md` in contr).
+- **Sidebar:** each project with its current git branch, and its terminals under it. A terminal row
+  shows its title, the folder it is in, a spinner while it prints, and how long it has been quiet
+  (`now`, `14m`, `2h`). Hover a project to get a `+` that opens a terminal there. The head `+` opens
+  another folder as a project. A "Servers" section sits below.
+- **Tabs:** the selected project's terminals in a `TabStrip`, with a close button and a `+`.
+- **Terminal:** a real login shell in a PTY, parsed by `alacritty_terminal` and drawn as coloured text
+  rows. Scrollback with the wheel or Shift+PageUp/PageDown. A tab closes when its shell exits.
+- **Title bar:** the diff summary of the project (`+added −removed`, files changed), split and search
+  buttons (placeholders, no action yet) and the files panel toggle.
+- **Files panel:** the project's git tree (`.gitignore` respected) with a state per file, a "changed
+  only" filter, and opening a file uses the default app (`open` on macOS, `xdg-open` on Linux).
 
 ## Run
 
@@ -25,9 +27,7 @@ CONTR_PROJECTS=~/proj-a:~/proj-b cargo run    # or pick your own
 ```
 
 Rust 1.99.1 (pinned in `rust-toolchain.toml`). On Linux, Rune needs `libxkbcommon` and `wayland`
-at build time.
-
-Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` branch.
+at build time. Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` branch.
 
 ## Keys
 
@@ -35,10 +35,12 @@ Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` branch.
 |---|---|---|
 | Ctrl+Shift+T | ⌘T | New tab in the selected project |
 | Ctrl+Shift+W | ⌘W | Close tab |
-| Ctrl+Tab, Ctrl+PageDown | | Next tab |
-| Ctrl+Shift+Tab, Ctrl+PageUp | | Previous tab |
+| Ctrl+Shift+B | ⌘B | Show or hide the files panel |
+| Ctrl+Tab | Ctrl+Tab | Next tab |
+| Ctrl+Shift+Tab | Ctrl+Shift+Tab | Previous tab |
+| Ctrl+PageDown / Ctrl+PageUp | same | Next / previous tab |
 | Ctrl+Shift+V | ⌘V | Paste (bracketed when the program asks) |
-| Shift+PageUp / PageDown | | Scroll back |
+| Shift+PageUp / PageDown | same | Scroll back |
 
 Everything else, Ctrl keys included, goes to the shell.
 
@@ -47,22 +49,36 @@ Everything else, Ctrl keys included, goes to the shell.
 Rune renders headless, so the UI can be checked without opening a window:
 
 ```sh
-cargo test                                              # key encoding tests
-cargo run -- --snap out.png --scene three-tabs --at 1   # three shells, rendered to PNG
+cargo test                                                           # unit and integration tests
+cargo run -- --snap out.png --size 1710x1112 --scale 1 --scene three-tabs --at 4   # render to PNG
+cargo run -- --tree tree.json --scene three-tabs                     # the element tree with bounds, as JSON
+cargo run -- --script script.json --tree tree.json --scene three-tabs  # click, hover and keys, then the tree
 ```
+
+- `--scene` picks a fixed state: `three-tabs` (three shells in the first project) or `ansi` (colour demo).
+- `--at <seconds>` waits before the shot, so the shells have printed their prompt.
+- A script is `{"events": [{"t": 0.5, "type": "tap", "key": "term-1"}, ...]}`. Elements have stable
+  keys such as `tab/0`, `project-0`, `term-1` and `add-0`; `tests/` shows more.
 
 ## Layout
 
 | File | What |
 |---|---|
-| `src/main.rs` | State, the sidebar, tabs and terminal views, keys and shortcuts |
-| `src/session.rs` | A shell in a PTY; a reader thread feeds `alacritty_terminal` and wakes the window |
-| `src/grid.rs` | The emulator's visible grid → text rows with colour spans and the cursor |
-| `src/keys.rs` | Rune key events → xterm byte sequences |
-| `src/theme.rs` | contr's colour and type tokens |
+| `src/main.rs` | State, the title bar, tabs and terminal views, keys and shortcuts |
+| `src/sidebar.rs` | The sidebar: projects, branch, terminal rows, servers |
+| `src/session.rs` | A shell in a PTY; a reader thread feeds `alacritty_terminal`; row subtitle |
+| `src/grid.rs` | The emulator's visible grid to text rows with colour spans and the cursor |
+| `src/keys.rs` | Rune key events to xterm byte sequences |
+| `src/diff.rs` | `git diff` summary and change list for the title bar and the files panel |
+| `src/files.rs` | The files panel data: git tree, change state, open with the default app |
+| `src/shell.rs` | The window shell: title bar and three panel cards (shared with `examples/kit_preview.rs`) |
+| `src/theme.rs` | Sizes, type styles and fonts |
+| `tests/` | Headless integration tests (`--script` and `--tree`) for each part |
+| `docs/design/` | The design target, the build order (`PARTS.md`) and snapshots per part |
 
 ## Not built
 
 - Text selection and copy, and mouse reporting to programs inside the terminal.
+- Split and search (the buttons are there, with no action).
 - Measured cell width: it assumes 0.6 em, which fits JetBrains Mono and DejaVu Sans Mono.
-- herdr (`hc`) agents: these are plain shells. Projects aren't saved between launches.
+- herdr (`hc`) agents: these are plain shells. Projects are not saved between launches.

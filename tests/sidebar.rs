@@ -18,6 +18,8 @@ impl Fixture {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/.git/HEAD"), "ref: refs/heads/feat/x\n").unwrap();
+        std::fs::create_dir_all(root.join("long-project-name/.git")).unwrap();
+        std::fs::write(root.join("long-project-name/.git/HEAD"), "ref: refs/heads/worktree-agent-a562bb76be1982d77\n").unwrap();
         std::fs::create_dir_all(root.join("empty")).unwrap();
         std::fs::create_dir_all(root.join("added")).unwrap();
         Fixture { root: root.canonicalize().unwrap() }
@@ -34,10 +36,14 @@ impl Drop for Fixture {
 }
 
 fn run(fx: &Fixture, events: Vec<Value>) -> Value {
+    let projects = format!("{}:{}", fx.dir("repo").display(), fx.dir("empty").display());
+    run_with(fx, &projects, events)
+}
+
+fn run_with(fx: &Fixture, projects: &str, events: Vec<Value>) -> Value {
     let script = fx.root.join("script.json");
     let out = fx.root.join("tree.json");
     std::fs::write(&script, json!({ "events": events }).to_string()).unwrap();
-    let projects = format!("{}:{}", fx.dir("repo").display(), fx.dir("empty").display());
     let run = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
         .env("CONTR_PROJECTS", projects)
         .args([
@@ -214,4 +220,65 @@ fn the_settings_gear_is_there() {
     let fx = Fixture::new("gear");
     let t = run(&fx, vec![]);
     assert!(find(&t, "settings").is_some());
+}
+
+/// The rect of the element keyed `child` inside the row keyed `row`.
+fn row_rect(tree: &Value, row: &str, child: &str) -> Vec<f64> {
+    let marker = format!("/{row}/");
+    let e = elements(tree)
+        .iter()
+        .find(|e| e["key"] == child && e["path"].as_str().is_some_and(|p| p.contains(&marker)))
+        .unwrap_or_else(|| panic!("no {child} in {row}"));
+    e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect()
+}
+
+#[test]
+fn a_terminal_subtitle_is_never_its_title() {
+    let fx = Fixture::new("subtitle");
+    let t = run(&fx, vec![]);
+    for id in 1..=3 {
+        let row = format!("term-{id}");
+        let title = row_text(&t, &row, "label").unwrap();
+        let sub = row_text(&t, &row, "subtitle");
+        assert!(sub.as_deref().is_some_and(|s| !s.is_empty()), "{row} has a subtitle");
+        assert_ne!(sub, Some(title), "{row}: the subtitle repeats the title");
+        assert_eq!(rect(&t, &row)[3], 48.0);
+    }
+}
+
+#[test]
+fn a_long_branch_keeps_the_project_name() {
+    let fx = Fixture::new("longbranch");
+    let projects = fx.dir("long-project-name").display().to_string();
+    let t = run_with(&fx, &projects, vec![]);
+    let detail = row_text(&t, "project-0", "detail").unwrap();
+    assert!(detail.ends_with('…') && detail.chars().count() <= 14, "the branch is clipped: {detail}");
+    let label = row_rect(&t, "project-0", "label");
+    let meta = row_rect(&t, "project-0", "detail");
+    assert!(label[2] > meta[2], "the name ({}) is wider than the branch ({})", label[2], meta[2]);
+    assert_eq!(row_text(&t, "project-0", "label").as_deref(), Some("long-project-name"));
+}
+
+#[test]
+fn the_meta_sits_at_the_row_edge_when_not_hovered() {
+    let fx = Fixture::new("metaedge");
+    let t = run(&fx, vec![]);
+    let edge = |row: &str| {
+        let r = row_rect(&t, row, "detail");
+        r[0] + r[2]
+    };
+    // Same right edge as a row with no trailing control ("this Mac" / "local").
+    let target = edge("server-this-mac");
+    assert!((edge("project-0") - target).abs() <= 1.0, "meta right edge {} vs {target}", edge("project-0"));
+    assert!((edge("project-1") - target).abs() <= 1.0);
+}
+
+#[test]
+fn hovering_a_project_shows_the_plus_in_the_meta_slot() {
+    let fx = Fixture::new("metahover");
+    let t = run(&fx, vec![hover(0.3, "project-0")]);
+    let add = rect(&t, "add-0");
+    let slot = row_rect(&t, "project-0", "meta-slot");
+    assert!((add[0] + add[2] - (slot[0] + slot[2])).abs() <= 1.0, "the + sits at the slot's right edge");
+    assert_eq!(rect(&t, "project-0")[3], 30.0, "no layout shift");
 }
