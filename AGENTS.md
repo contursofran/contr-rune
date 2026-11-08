@@ -20,10 +20,15 @@ match the "contr · from zero" design.
 
 ## Design source
 
-- `docs/design/PARTS.md`: the build order, the "done when" for each part, and the rules below in detail.
-- `docs/design/main.png`: the target (1710×1112). `docs/design/main.html`: the exact CSS values.
-- `docs/design/tokens.css`: all tokens (dark and light).
-- The owner's artifacts: canvas "contr · from zero" and design system "contr" (one README per component).
+The app is built from **rune-kit** components on rune-kit's **neutral theme** (owner, 2026-11-08). The
+"contr · from zero" design is the guide for layout, content and behaviour, not for exact colours.
+
+- `docs/design/explore/kit-neutral.png`: the visual target (board 1N, 1710×1112).
+- `examples/kit_preview.rs`: the code that renders it. Start each part from the matching piece there.
+- `docs/design/explore/rune-kit.md`: which rune-kit component maps to which design component.
+- `docs/design/PARTS.md`: the build order and the "done when" for each part.
+- `docs/design/main.png` and `main.html`: the original design. Use them for layout, copy and behaviour.
+- rune-kit docs: `crates/rune-kit/README.md` and `crates/rune-kit/examples/` in the Rune checkout.
 
 ## Work by parts
 
@@ -34,12 +39,13 @@ match the "contr · from zero" design.
 
 ## Look
 
-- Colours, sizes and type styles come only from `src/theme.rs` token names. No raw colours in views.
-- No amber or green in the chrome. Red (`blocked`) means only "needs you".
+- Use a rune-kit component wherever one exists. Build a custom element only when rune-kit has none (for
+  example the terminal grid), and say why in the PR.
+- Colours, type and radius come from the `Kit` (`Kit::neutral`). No raw colours in views. Accept the kit's
+  shapes and colours (tab chrome, meter size, green/red change counts); do not fight them.
 - Decisions already made (do not reopen):
-  - Panel widths follow the rendered reference: sidebar 334 and files 302 outer (312 / 280 content). The
-    sidebar's right edge is at x=342; the terminal panel and the tab strip start at x=350.
-  - The window stays native (macOS traffic lights) with the opaque glass colour. Real glass is a later part.
+  - Shell: `WindowTitlebar` (38) and three panel cards, as in `kit_preview.rs` (not `SplitView`).
+  - The window stays native (macOS traffic lights). Real glass is a later part.
   - Mono font fallback keeps the Nerd Font: `JetBrains Mono, JetBrainsMono Nerd Font, ui-monospace`.
 
 ## Check your work headlessly
@@ -47,9 +53,10 @@ match the "contr · from zero" design.
 Rune runs headless. Every part must be checked in three ways, not by eye alone:
 
 1. **Image:** `cargo run -- --snap <out.png> --size 1710x1112 --scale 1 --scene three-tabs --at 1`. Compare it
-   with `docs/design/main.png`. Commit it as `docs/design/snaps/part<n>.png`.
+   with `docs/design/explore/kit-neutral.png`. Commit it as `docs/design/snaps/part<n>.png`.
 2. **Element tree:** give the part's elements stable keys (for example `tab/0`, `tab/0/close`). Run with
-   `--tree <out.json>` and check the exact bounds against the design values.
+   `--tree <out.json>` and check the bounds against the target (run `kit_preview` with
+   `--tree` for its numbers).
 3. **Behaviour:** drive the part with `--script <script.json>` (click, hover, keys) and check the result in
    the `--tree` output.
 
