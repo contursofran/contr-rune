@@ -188,10 +188,7 @@ impl App {
     }
 
     fn set_grid_area(&mut self, w: f32, h: f32) {
-        let size = Size {
-            cols: ((w / CELL_W).floor() as u16).max(2),
-            rows: ((h / LINE_H).floor() as u16).max(1),
-        };
+        let size = grid_size(w, h);
         if size == self.size { return; }
         self.size = size;
         if let Some(id) = self.active
@@ -211,6 +208,11 @@ impl App {
             t.session.write(text.as_bytes());
         }
     }
+}
+
+/// Columns and rows that fit the laid-out grid area (already inside the panel padding).
+fn grid_size(w: f32, h: f32) -> Size {
+    Size { cols: ((w / CELL_W).floor() as u16).max(2), rows: ((h / LINE_H).floor() as u16).max(1) }
 }
 
 // ───────────────────────────── hooks ─────────────────────────────
@@ -491,17 +493,6 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
             .child(label("No terminal in this project", k.ty.ui, c.text_faint))
             .child(label("+ or Ctrl+Shift+T opens one", k.ty.text_xsmall, c.icon_faint));
     };
-    let cwd = t.session.cwd.display().to_string();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let cwd = if !home.is_empty() && cwd.starts_with(&home) { format!("~{}", &cwd[home.len()..]) } else { cwd };
-    let header = row().h(34.0).px(12.0).gap(8.0).items_center()
-        .child(label(">_", k.ty.text_xsmall, c.text_faint))
-        .child(label(t.session.label(), k.ty.ui, c.text_base).truncate().shrink().min_w(0.0))
-        .child(label("·", k.ty.ui, c.icon_faint))
-        .child(label(cwd, k.ty.text_xsmall, c.text_faint).truncate().shrink().min_w(0.0))
-        .child(spacer())
-        .child(label(format!("{}×{}", s.size.cols, s.size.rows), k.ty.text_xsmall, c.icon_faint));
-
     let lines = {
         let term = t.session.term.lock().unwrap();
         grid::lines(&term, s.focused, &grid::Ink::from_kit(k))
@@ -528,10 +519,27 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
         );
     }
 
-    shell::terminal_panel(k)
-        .child(header)
-        .child(el().w_full().h(1.0).fill(c.border_muted))
-        .child(col().grow(1.0).min_h(0.0).w_full().px(10.0).py(8.0).child(grid_el))
+    // The grid sits directly in the card, padded as the target (14 top, 20 sides, 12 bottom).
+    shell::terminal_panel(k).child(
+        col().key("terminal/body").grow(1.0).min_h(0.0).w_full().pt(PANEL_PAD_TOP).px(PANEL_PAD_X).pb(PANEL_PAD_BOTTOM).child(grid_el),
+    )
+}
+
+/// Typed into the shell by the `ansi` scene: the 16 colours as text, dim, bold, inverse, black text.
+const ANSI_DEMO: &str = concat!(
+    "clear; for i in 0 1 2 3 4 5 6 7; do printf \"\\033[3${i}m color-$i \\033[9${i}m bright-$i \\033[0m\"; done; echo; ",
+    "printf '\\033[2mdim text\\033[0m \\033[1mbold\\033[0m \\033[7minverse\\033[0m \\033[30mblack text\\033[0m \\033[90mbright black\\033[0m\\n'\r"
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_size_floors_and_keeps_a_minimum() {
+        assert_eq!(grid_size(CELL_W * 100.0 + 3.0, LINE_H * 30.0 + 7.0), Size { cols: 100, rows: 30 });
+        assert_eq!(grid_size(0.0, 0.0), Size { cols: 2, rows: 1 });
+    }
 }
 
 fn main() {
@@ -542,11 +550,18 @@ fn main() {
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
-        scenes: &[("three-tabs", |s| {
-            s.open_tab(0);
-            s.open_tab(0);
-            s.open_tab(0);
-        })],
+        scenes: &[
+            ("three-tabs", |s| {
+                s.open_tab(0);
+                s.open_tab(0);
+                s.open_tab(0);
+            }),
+            // One shell that prints the ANSI colours, to check the palette on the panel.
+            ("ansi", |s| {
+                s.open_tab(0);
+                if let Some(t) = s.active_tab() { t.session.write(ANSI_DEMO.as_bytes()); }
+            }),
+        ],
         ..AppSpec::new("contr", (1280.0, 800.0), init, view)
     };
     // The 38 px title bar is ours; the traffic lights sit in its left area (first circle at x 18, centred).

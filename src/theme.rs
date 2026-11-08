@@ -77,6 +77,11 @@ pub const COUNT: TextStyle = TextStyle::new(11.0, 500.0).mono().lh(14.0);
 
 /// Terminal line height (`terminal`: 13/20).
 pub const LINE_H: f32 = 20.0;
+/// Terminal panel padding (`main.html`: 14px 20px 12px).
+pub const PANEL_PAD_TOP: f32 = 14.0;
+pub const PANEL_PAD_X: f32 = 20.0;
+pub const PANEL_PAD_BOTTOM: f32 = 12.0;
+
 /// A monospace cell is 0.6 em wide in JetBrains Mono.
 pub const CELL_W: f32 = 13.0 * 0.6;
 
