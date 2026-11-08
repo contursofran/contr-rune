@@ -36,10 +36,10 @@ pub struct Line {
     pub spans: Vec<Span>,
 }
 
-/// The 16 ANSI colours (a muted palette that sits on contr's #121212).
+/// The 16 ANSI colours (muted; bright black is lifted so hints stay readable on the kit panel).
 const ANSI: [u32; 16] = [
     0x1c1c1c, 0xf07178, 0xa6d189, 0xe5c07b, 0x82aaff, 0xc792ea, 0x89ddff, 0xbdbdbd,
-    0x5a5a5a, 0xff8b92, 0xc3e88d, 0xffcb6b, 0x9cc4ff, 0xddb3f5, 0xa3ebff, 0xededed,
+    0x808080, 0xff8b92, 0xc3e88d, 0xffcb6b, 0x9cc4ff, 0xddb3f5, 0xa3ebff, 0xededed,
 ];
 
 use theme::{srgb as rgb, srgb8};
@@ -59,6 +59,10 @@ fn indexed(i: u8) -> Color {
             srgb8(v, v, v)
         }
     }
+}
+
+fn is_black(c: AColor) -> bool {
+    matches!(c, AColor::Named(NamedColor::Black) | AColor::Indexed(0))
 }
 
 /// A cell colour, honouring colours the program set with OSC 4/10/11.
@@ -113,6 +117,8 @@ pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink) -> Vec<Line> {
 
         let (mut fg, mut bg) = (resolve(cell.fg, colors, true, ink), resolve(cell.bg, colors, false, ink));
         let mut has_bg = !matches!(cell.bg, AColor::Named(NamedColor::Background));
+        // Black text on the panel would vanish; lift it to bright black. Black on a set background stays.
+        if !has_bg && !cell.flags.contains(Flags::INVERSE) && is_black(cell.fg) { fg = indexed(8); }
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
             has_bg = true;
@@ -160,4 +166,47 @@ pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink) -> Vec<Line> {
         if let Some(last) = line.spans.last_mut() { last.end = last.end.min(k as u32); }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lum(c: Color) -> f32 { 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b }
+
+    fn contrast(a: Color, b: Color) -> f32 {
+        let (x, y) = (lum(a) + 0.05, lum(b) + 0.05);
+        x.max(y) / x.min(y)
+    }
+
+    #[test]
+    fn ansi_palette_is_readable_on_the_kit_panel() {
+        let ink = Ink::from_kit(&Kit::neutral(true));
+        for i in 0..16u8 {
+            let ratio = contrast(indexed(i), ink.bg);
+            eprintln!("ansi {i}: {ratio:.2}");
+            // Black (0) is for backgrounds and may sit close to the panel; the rest must read.
+            let min = if i == 0 { 1.0 } else { 3.0 };
+            assert!(ratio >= min, "ansi {i} contrast {ratio:.2} < {min}");
+        }
+    }
+
+    #[test]
+    fn black_text_is_detected() {
+        assert!(is_black(AColor::Named(NamedColor::Black)));
+        assert!(is_black(AColor::Indexed(0)));
+        assert!(!is_black(AColor::Indexed(8)));
+        assert!(!is_black(AColor::Named(NamedColor::Foreground)));
+    }
+
+    #[test]
+    fn dim_and_bright_black_text_stay_visible() {
+        let ink = Ink::from_kit(&Kit::neutral(true));
+        // Bright black (ANSI 8) is what shells use for hints and autosuggestions.
+        assert!(contrast(indexed(8), ink.bg) >= 4.0, "bright black {:.2}", contrast(indexed(8), ink.bg));
+        // SGR dim mixes the text 40% toward the panel; it must still be legible.
+        let dimmed = ink.text.mix(ink.bg, 0.4);
+        assert!(contrast(dimmed, ink.bg) >= 4.0, "dim {:.2}", contrast(dimmed, ink.bg));
+        assert!(contrast(ink.dim, ink.bg) >= 4.0);
+    }
 }

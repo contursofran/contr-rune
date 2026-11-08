@@ -46,7 +46,7 @@ The app is built from **rune-kit** components on rune-kit's **neutral theme** (o
 - Decisions already made (do not reopen):
   - Shell: `WindowTitlebar` (38) and three panel cards, as in `kit_preview.rs` (not `SplitView`).
   - The window stays native (macOS traffic lights). Real glass is a later part.
-  - Mono font fallback keeps the Nerd Font: `JetBrains Mono, JetBrainsMono Nerd Font, ui-monospace`.
+  - Mono font fallback keeps the Nerd Font icons: `JetBrains Mono, Symbols Nerd Font Mono, JetBrainsMono Nerd Font, ui-monospace`. "Symbols Nerd Font Mono" (MIT) is bundled in `assets/fonts`, so prompt icons draw on any machine.
 
 ## Check your work headlessly
 
