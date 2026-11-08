@@ -1,45 +1,50 @@
 # Build by parts
 
-contr-rune follows the "contr · from zero" design (dark theme first). We build it one part at a time.
-Each part is one small PR. A part is done when it **looks** like the reference and **works** like it.
+contr-rune is built from **rune-kit** components on rune-kit's **neutral theme** (owner, 2026-11-08). We
+build it one part at a time. Each part is one small PR. A part is done when it **looks** like the target and
+**works** like the design.
 
 ## Reference
 
 | File | What |
 |---|---|
-| `main.html` | Board "1 · Orchestrator selected", static HTML. Exact sizes, colours and fonts are in its CSS. |
-| `main.png` | `main.html` rendered at 1710×1112 (headless Chrome). Compare a `--snap` of the app with it. |
-| `tokens.css` | All design tokens: dark and light colours, spacing, radius, sizes, type styles. |
+| `explore/kit-neutral.png` | **The visual target** (board 1N): the main screen from rune-kit on `Kit::neutral(true)`, 1710×1112. |
+| `../../examples/kit_preview.rs` | The code that renders the target, with static data. Start each part from its matching piece. |
+| `explore/rune-kit.md` | Design component → rune-kit component, and what the kit cannot do. |
+| `explore/kit-contr.png` | The same tree with contr's tokens (board 1K). Not the target; kept for comparison. |
+| `main.html`, `main.png` | The original design (board 1). Use it for layout, copy and behaviour, not for colours. |
+| `tokens.css` | The original design tokens. |
 
-Source artifacts (owner's claude.ai): canvas "contr · from zero" (`45a3e113-1779-433f-b075-a548b2c4f0da`)
-and design system "contr" (`18e5fc02-6836-4af3-8cfd-d09fdfb8c48e`, one README and preview per component).
-
-To re-render `main.png`:
+Render the target and its element tree:
 
 ```sh
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars \
-  --force-device-scale-factor=1 --window-size=1710,1112 --virtual-time-budget=5000 \
-  --screenshot="$PWD/docs/design/main.png" "file://$PWD/docs/design/main.html"
+cargo run --example kit_preview -- --snap docs/design/explore/kit-neutral.png --size 1710x1112 --scale 1 --theme dark neutral
+cargo run --example kit_preview -- --tree /tmp/kit-tree.json --size 1710x1112 --scale 1 --theme dark neutral
 ```
+
+Source artifacts (owner's claude.ai): canvas "contr · from zero" (`45a3e113-1779-433f-b075-a548b2c4f0da`;
+boards 1K and 1N are the rune-kit renders) and design system "contr" (`18e5fc02-6836-4af3-8cfd-d09fdfb8c48e`).
 
 ## Rules for every part
 
-- Use token names from `src/theme.rs`, never raw colours in views.
-- No amber or green in the chrome. Red (`blocked`) only means "needs you".
-- Check the result with `cargo run -- --snap out.png --scene <scene>` at 1710×1112 and compare it with
-  `main.png`. Put both images (or a crop of the part) in the PR description.
-- Keep what already works (PTY, keys, scrollback) working.
+- Use a rune-kit component wherever one exists; custom only when the kit has none, with the reason in the PR.
+- Colours, type and radius come from the `Kit`. No raw colours in views. Accept the kit's shapes and colours.
+- Give the part's elements stable keys. Check it headlessly: `--snap` against `kit-neutral.png`, `--tree`
+  bounds against the target's tree, `--script` for clicks and keys. Make the tree and script checks a lasting
+  test under `tests/`. Commit the snap as `snaps/part<n>.png`.
+- Keep what already works (PTY, keys, scrollback, close on exit) working.
 
 ## Parts, in order
 
-| # | Part | Design components | Done when |
+Part 1 of the first plan (custom tokens and window shell, PR #1) is merged. The custom tab strip (PR #3) was
+closed for this plan.
+
+| # | Part | rune-kit | Done when |
 |---|---|---|---|
-| 1 | Tokens and window shell | Window, Panel, TitleBar (left area only) | Theme has every dark token and type style; Inter is bundled; the window is glass (or its opaque composite), radius 14; 38 px title bar with room for the traffic lights; three panels (sidebar 334 / files 302 outer, 312 / 280 content; terminal in between) with gap 8, radius 12, `panel` fill and `panel-line` border. Existing content still works inside them. |
-| 2 | Tabs | Tab, IconButton | Tab strip in the title bar from x=342: height 30, max 180, 12.5 px Inter, selected = panel fill + inset line, hover fill, `×` 16 px on the selected tab, `+` 26 px button. Click, close, new, keys work. |
-| 3 | Terminal panel | Terminal | Padding 14/20/12, `terminal` type 13/20, `terminal-text` ink, ANSI palette readable on the panel, cursor like the design. |
-| 4 | Status glyph | StatusGlyph | Braille glyph: working (10 frames in 0.9 s), waiting (⠿ pulse 1.6 s), idle (⠶ at `ink-30`), needs-you (red). Animates only while on screen and working. Used in tabs. |
-| 5 | Sidebar projects | ProjectRow, AgentRow | "Projects" head with `+`; project row (folder icon, name 500 weight `ink-85`, branch meta); its terminals as rows under it (glyph, title, mono meta, age), rail line, selected row = `ink-100` with no fill. |
-| 6 | Sidebar foot | ServerRow | "Servers" head, "this Mac · local" row, hairline, settings gear 24 px. |
-| 7 | Title bar right | DiffSummary, IconButton | `+120 −126 9 files` mono summary from git; split, search and files-toggle icon buttons; files toggle hides the files panel. |
-| 8 | Files panel | FileTree, UsageMeter | Git tree of the selected project: folder/file icons, 26 px rows, indent rails, modified/new/deleted styles with `+a −r`; meters at the bottom. |
-| 9 | Later | Outline, QuestionsNotch, QuestionsCard, Settings, light theme | Need agent data (hc) or later design boards. |
+| K1 | Kit foundation and shell | `Kit::neutral`, `WindowTitlebar` | rune-kit is a normal dependency; the app builds one `Kit::neutral(true)` and every view reads it; the custom colour tokens in `src/theme.rs` are gone (keep sizes, fonts and the terminal palette); shell = `WindowTitlebar` 38 + three panel cards as in `kit_preview.rs`. Existing sidebar, tabs and terminal still work inside it. |
+| K2 | Tabs | `TabStrip`, `TabItem`, `TabOverflow` | Tabs of the selected project in the title bar: icon, program label, close, `+`, busy status on a working terminal, overflow. Click, close, new, reorder and the keys work. |
+| K3 | Terminal panel | custom grid, kit colours | Terminal text and background from the kit; padding as the target; cursor visible; ANSI palette readable on the kit panel. |
+| K4 | Sidebar | `Sidebar`, `SidebarRow`, `SidebarSection` or header slot, `IconButton`, kit `Spinner`/`RowStatus` | "Projects" head with `+`; project rows; terminal rows under each project (depth, label, meta, age, busy status); "Servers" with "this Mac · local"; settings gear in the foot. Keyboard list, select, open a terminal. |
+| K5 | Title bar right | `Button` (ghost), `IconButton` | Diff summary of the selected project from git (`+a −r n files`); split, search and files-toggle buttons; files toggle hides the files panel. |
+| K6 | Files panel | `FileTree`, `Tree`, `TreeItem::changes`, `Progress` | Git tree of the selected project with change counts and modified/new/deleted styles; open/close folders; meters at the bottom. |
+| K7 | Later | `Popover`, `Segmented`, `TextInput`, `Switch`, `Select`, `Kit::neutral(false)` | Questions notch and card, outline, settings, light theme. Need agent data (hc) or later boards. |

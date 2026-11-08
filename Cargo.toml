@@ -11,5 +11,9 @@ rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a023
 alacritty_terminal = "0.26"
 portable-pty = "0.9"
 
+# Exploration only: `examples/kit_preview.rs` builds the main screen from rune-kit.
+[dev-dependencies]
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+
 [profile.dev.package."*"]
 opt-level = 2

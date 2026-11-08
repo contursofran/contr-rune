@@ -644,6 +644,7 @@ dependencies = [
  "alacritty_terminal",
  "portable-pty",
  "rune",
+ "rune-kit",
 ]
 
 [[package]]
@@ -2726,6 +2727,16 @@ dependencies = [
  "xkbcommon",
  "zbus 6.2.1",
  "zeroize",
+]
+
+[[package]]
+name = "rune-kit"
+version = "0.0.1"
+source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+dependencies = [
+ "rune",
+ "rune-motion",
+ "unicode-segmentation",
 ]
 
 [[package]]
