@@ -52,8 +52,12 @@ pub fn lights_gap() -> El {
     el().w(LIGHTS_WIDTH).h(12.0)
 }
 
-/// The window: the title bar over a row of the three cards.
-pub fn window(k: &Kit, bar: El, sidebar: El, terminal: El, files: El, layer: Vec<El>) -> El {
-    let body = row().w_full().grow(1.0).min_h(0.0).gap(SPACE_8).px(SPACE_8).pb(SPACE_8).child(sidebar).child(terminal).child(files);
+/// The window: the title bar over a row of the cards. `files` is `None` when the panel is hidden;
+/// the terminal card then takes its width.
+pub fn window(k: &Kit, bar: El, sidebar: El, terminal: El, files: Option<El>, layer: Vec<El>) -> El {
+    let mut body = row().w_full().grow(1.0).min_h(0.0).gap(SPACE_8).px(SPACE_8).pb(SPACE_8).child(sidebar).child(terminal);
+    if let Some(files) = files {
+        body = body.child(files);
+    }
     root(col().key("window").w_full().h_full().fill(k.c.bg_deep).child(bar).child(body), layer)
 }

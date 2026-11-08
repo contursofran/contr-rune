@@ -159,12 +159,13 @@ fn dragging_a_tab_reorders_the_strip() {
 
 #[test]
 fn no_project_name_on_the_title_bar_right() {
+    // The diff summary (K5) is the only text there; it is not a project name.
     let t = run("right", vec![]);
     let bar = elements(&t).iter().find(|e| e["key"] == "titlebar").unwrap();
     let bar_right = bar["rect"][0].as_f64().unwrap() + bar["rect"][2].as_f64().unwrap();
     let texts_right: Vec<&Value> = elements(&t)
         .iter()
-        .filter(|e| e["path"].as_str().is_some_and(|p| p.contains("titlebar/")) && e["rect"][0].as_f64().unwrap() > 1000.0 && e["text"].is_string())
+        .filter(|e| e["path"].as_str().is_some_and(|p| p.contains("titlebar/") && !p.contains("diff-summary")) && e["rect"][0].as_f64().unwrap() > 1000.0 && e["text"].is_string())
         .collect();
     assert!(texts_right.is_empty(), "nothing on the right of the title bar before {bar_right}: {texts_right:?}");
 }

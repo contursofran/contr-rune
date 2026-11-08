@@ -384,7 +384,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = if s.contr { contr_kit() } else { Kit::neutral(true) };
     let mut layer = Vec::new();
     let bar = titlebar(s, cx, &k, &mut layer);
-    shell::window(&k, bar, left(&k), terminal(&k), files(s, &k), layer)
+    shell::window(&k, bar, left(&k), terminal(&k), Some(files(s, &k)), layer)
 }
 
 fn main() {
