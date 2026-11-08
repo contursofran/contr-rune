@@ -11,17 +11,21 @@
 //! `neutral` is `Kit::neutral(true)` untouched. `contr` is the same kit with our tokens
 //! (`src/theme.rs`) written into its `Palette`, `Type` and `Radius`.
 
+#[path = "kit_preview_tokens/colors.rs"]
+mod colors;
+#[path = "../src/shell.rs"]
+mod shell;
 #[path = "../src/theme.rs"]
 mod theme;
 
-use rune::{AppSpec, ChromeInsets, Color, Cx, El, Icon, TextStyle, col, el, icon, row, spacer, text};
-use rune_kit::shell::{TabDragState, TabOverflow, TabItem, TabOrientation, TabStrip, WindowTitlebar};
+use rune::{AppSpec, Color, Cx, El, Icon, TextStyle, col, el, icon, row, spacer, text};
+use rune_kit::shell::{TabDragState, TabItem, TabOrientation, TabOverflow, TabStrip};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, FileNode, FileTree, IconButton, IconButtonVariant, Kit, Progress, Sidebar, SidebarRow, Tree,
     TreeItem, TreeModel, TreeStyle,
 };
 
-use theme::{Theme, theme as tokens};
+use colors::{Theme, theme as tokens};
 
 // Icons from main.html (16 point view box).
 macro_rules! ico {
@@ -155,7 +159,7 @@ fn claude(k: &Kit, size: f32, dim: bool) -> El {
 
 fn lights() -> El {
     let dot = |c: u32| el().size(12.0, 12.0).radius(6.0).fill(theme::srgb(c));
-    row().w(316.0).gap(8.0).center_y().child(dot(0xff5f57)).child(dot(0xfebc2e)).child(dot(0x28c840))
+    row().w(shell::LIGHTS_WIDTH).gap(8.0).center_y().child(dot(0xff5f57)).child(dot(0xfebc2e)).child(dot(0x28c840))
 }
 
 fn titlebar(s: &App, cx: &mut Cx<App>, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -176,27 +180,21 @@ fn titlebar(s: &App, cx: &mut Cx<App>, k: &Kit, layer: &mut Vec<El>) -> El {
         .trailing_action(plus)
         .build_layered(k, layer);
     let diff = Button::new("+120  \u{2212}126  9 files").variant(ButtonVariant::Ghost).build(k);
-    WindowTitlebar::from_insets(ChromeInsets::default(), 1.0)
-        .height(theme::TITLEBAR_HEIGHT)
-        .leading_padding(18.0)
-        .trailing_padding(8.0)
-        .gap(8.0)
-        .leading(lights())
-        .tabs(strip)
-        .trailing(diff)
-        .trailing(icon_button_k(k, &SPLIT, "Split terminal"))
-        .trailing(icon_button_k(k, &SEARCH, "Search"))
-        .trailing(icon_button_k(k, &PANEL_RIGHT, "Hide files"))
-        .build(k)
+    shell::titlebar(
+        k,
+        lights(),
+        strip,
+        vec![
+            diff,
+            icon_button_k(k, &SPLIT, "Split terminal"),
+            icon_button_k(k, &SEARCH, "Search"),
+            icon_button_k(k, &PANEL_RIGHT, "Hide files"),
+        ],
+    )
 }
 
 fn icon_button_k(k: &Kit, i: &'static Icon, label: &str) -> El {
     IconButton::new(i).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Large).label(label.to_owned()).build(k)
-}
-
-/// A flat panel as contr draws it: `panel` fill, `panel-line` border, radius 12.
-fn panel(k: &Kit) -> El {
-    col().fill(k.c.bg_base).radius(k.radius.lg).border(1.0, k.c.border_muted).clip_rounded(k.radius.lg)
 }
 
 fn section_head(k: &Kit, title: &str, action: Option<(&'static Icon, &str)>) -> El {
@@ -259,7 +257,7 @@ fn left(k: &Kit) -> El {
         .footer(row().w_full().h(1.0).fill(k.c.border_muted).mt(6.0))
         .footer(row().w_full().pt(8.0).pr(2.0).child(spacer()).child(icon_button_k(k, &GEAR, "Settings")))
         .build(k);
-    panel(k).key("sidebar").w(theme::SIDEBAR_WIDTH).h_full().padding(10.0).child(sidebar)
+    shell::sidebar_panel(k).padding(10.0).child(sidebar)
 }
 
 enum Tone {
@@ -323,11 +321,7 @@ fn terminal(k: &Kit) -> El {
         .child(text("3").font(theme::COUNT).color(t.ink_100))
         .children([8.0, 12.0, 8.0, 14.0].map(|w| tick(w, false)))
         .children([10.0, 12.0, 8.0].map(|w| tick(w, true)));
-    panel(k)
-        .key("terminal")
-        .grow(1.0)
-        .min_w(0.0)
-        .h_full()
+    shell::terminal_panel(k)
         .child(
             row()
                 .grow(1.0)
@@ -378,10 +372,7 @@ fn files(s: &App, k: &Kit) -> El {
         .child(meter("Context", 0.45))
         .child(meter("Claude", 0.38))
         .child(meter("Codex", 0.12));
-    panel(k)
-        .key("files")
-        .w(theme::FILES_WIDTH)
-        .h_full()
+    shell::files_panel(k)
         .padding(10.0)
         .child(section_head(k, "contr", Some((&FILTER, "Show changed files only"))))
         .child(tree)
@@ -393,8 +384,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = if s.contr { contr_kit() } else { Kit::neutral(true) };
     let mut layer = Vec::new();
     let bar = titlebar(s, cx, &k, &mut layer);
-    let body = row().w_full().grow(1.0).min_h(0.0).gap(8.0).px(8.0).pb(8.0).child(left(&k)).child(terminal(&k)).child(files(s, &k));
-    rune_kit::root(col().key("window").w_full().h_full().fill(k.c.bg_deep).child(bar).child(body), layer)
+    shell::window(&k, bar, left(&k), terminal(&k), files(s, &k), layer)
 }
 
 fn main() {
