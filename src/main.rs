@@ -1,7 +1,6 @@
 //! contr-rune: contr's sidebar, terminal tabs and terminal, rebuilt on Rune.
 //!
-//! Left: projects, each with its terminals, then the terminals grouped by state (contr's
-//! "Agents" section). Top: the tabs of the selected project and `+`. Middle: the selected
+//! Left: projects, each with its terminals, then the servers. Top: the tabs of the selected project and `+`. Middle: the selected
 //! terminal, a real shell in a PTY.
 //!
 //! `CONTR_PROJECTS=~/a:~/b cargo run` opens those folders as projects (default: the current
@@ -12,6 +11,7 @@ mod grid;
 mod keys;
 mod session;
 mod shell;
+mod sidebar;
 mod theme;
 
 use std::path::PathBuf;
@@ -21,7 +21,7 @@ use std::time::Duration;
 use alacritty_terminal::term::TermMode;
 use rune_kit::shell::{TabDragState, TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
-use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, el, row, spacer, text};
+use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, text};
 
 use session::{Session, Size, now_ms};
 use theme::*;
@@ -83,7 +83,7 @@ fn init() -> App {
     let projects = paths
         .into_iter()
         .map(|path| Project {
-            name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into()),
+            name: sidebar::folder_name(&path),
             path,
             last_tab: None,
         })
@@ -117,6 +117,19 @@ impl App {
             }
             Err(e) => self.error = Some(format!("couldn't start a shell: {e}")),
         }
+    }
+
+    /// Add a folder as a project and select it; a folder that is already a project is just selected.
+    fn add_project(&mut self, path: PathBuf) {
+        let path = path.canonicalize().unwrap_or(path);
+        let i = match self.projects.iter().position(|p| p.path == path) {
+            Some(i) => i,
+            None => {
+                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None });
+                self.projects.len() - 1
+            }
+        };
+        self.select_project(i);
     }
 
     fn select_tab(&mut self, id: u64) {
@@ -301,142 +314,12 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = &s.kit;
     let mut layer = Vec::new();
     let bar = title_bar(k, s, cx, &mut layer);
-    shell::window(k, bar, sidebar(k, s), terminal_panel(k, s), shell::files_panel(k), layer)
+    shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), shell::files_panel(k), layer)
         .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
 }
 
 fn label(t: impl Into<String>, style: rune::tok::TextStyle, color: Color) -> El {
     text(t.into()).font(style).color(color)
-}
-
-fn hover_tint(k: &Kit) -> Color { k.c.hover }
-
-// Sidebar ─────────────
-
-fn sidebar(k: &Kit, s: &App) -> El {
-    let c = &k.c;
-    let mut projects = col().gap(2.0).px(6.0);
-    for (i, p) in s.projects.iter().enumerate() {
-        projects = projects.child(project_row(k, s, i, p));
-        for t in s.project_tabs(i) {
-            projects = projects.child(terminal_row(k, s, t, 22.0));
-        }
-    }
-
-    let working: Vec<&Tab> = s.tabs.iter().filter(|t| s.status(t.session.id) == Status::Working).collect();
-    let idle: Vec<&Tab> = s.tabs.iter().filter(|t| s.status(t.session.id) == Status::Idle).collect();
-    let mut agents = col().gap(2.0).px(6.0);
-    for (title, color, group) in [("Working", c.text_base, &working), ("Idle", c.text_faint, &idle)] {
-        if group.is_empty() { continue; }
-        agents = agents.child(label(format!("{title} {}", group.len()), k.ty.text_xsmall, color).px(6.0).pt(6.0).pb(2.0));
-        for t in group.iter() {
-            agents = agents.child(terminal_row(k, s, t, 0.0));
-        }
-    }
-
-    shell::sidebar_panel(k)
-        .child(
-            row().h(40.0).px(14.0).items_center().window_drag()
-                .child(label("contr", k.ty.text_xsmall_medium, c.text_base))
-                .child(spacer())
-                .child(label("rune", k.ty.text_xsmall, c.icon_faint)),
-        )
-        .child(section_header(k, "Spaces", s.projects.len()))
-        .child(label("This computer", k.ty.text_xsmall, c.text_faint).px(14.0).pb(4.0))
-        .child(projects)
-        .child(spacer())
-        .child(section_header(k, "Terminals", s.tabs.len()))
-        .child(agents)
-        .child(
-            row().h(30.0).px(14.0).items_center()
-                .child(label(s.error.clone().unwrap_or_default(), k.ty.text_xsmall, c.danger.icon).truncate()),
-        )
-}
-
-fn section_header(k: &Kit, title: &str, n: usize) -> El {
-    let c = &k.c;
-    row().px(14.0).pt(10.0).pb(6.0).items_center()
-        .child(label(title, k.ty.ui, c.text_faint))
-        .child(spacer())
-        .child(label(n.to_string(), k.ty.text_xsmall, c.icon_faint))
-}
-
-fn initials(name: &str) -> String {
-    let parts: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
-    let s: String = match parts.as_slice() {
-        [] => "?".into(),
-        [one] => one.chars().take(2).collect(),
-        [a, b, ..] => a.chars().take(1).chain(b.chars().take(1)).collect(),
-    };
-    s.to_uppercase()
-}
-
-fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
-    let c = &k.c;
-    let selected = i == s.selected_project;
-    let count = s.project_tabs(i).count();
-    let tile = el().size(20.0, 20.0).radius(k.radius.sm).fill(c.pressed).border(1.0, c.border_muted).center()
-        .child(label(initials(&p.name), k.ty.text_xsmall, c.text_muted));
-    let add = el().key(format!("add-{i}")).size(20.0, 20.0).radius(k.radius.sm).center().hover(c.pressed)
-        .role("button").label("New terminal here")
-        .on_press(move |s: &mut App| s.open_tab(i))
-        .child(label("+", k.ty.ui, c.text_faint));
-    let mut r = row().key(format!("project-{i}")).px(8.0).py(6.0).radius(k.radius.md).gap(8.0).items_center()
-        .role("button").label(p.name.clone())
-        .hover(hover_tint(k))
-        .on_press(move |s: &mut App| s.select_project(i))
-        .child(tile)
-        .child(label(p.name.clone(), k.ty.ui, if selected { c.text_base } else { c.text_muted }).truncate().shrink().min_w(0.0))
-        .child(spacer())
-        .child(label(if count > 0 { count.to_string() } else { String::new() }, k.ty.text_xsmall, c.icon_faint))
-        .child(add);
-    if selected { r = r.fill(c.pressed).border(1.0, c.border_muted); }
-    r
-}
-
-fn status_dot(k: &Kit, st: Status) -> El {
-    let c = &k.c;
-    match st {
-        Status::Working => el().size(7.0, 7.0).radius(3.5).fill(c.text_base),
-        Status::Idle => el().size(9.0, 9.0).radius(4.5).border(1.6, c.icon_faint),
-    }
-}
-
-fn terminal_row(k: &Kit, s: &App, t: &Tab, indent: f32) -> El {
-    let c = &k.c;
-    let id = t.session.id;
-    let active = s.active == Some(id);
-    let st = s.status(id);
-    let second = match st {
-        Status::Working => "working".to_string(),
-        Status::Idle => {
-            let age = now_ms().saturating_sub(t.session.last_output.load(Ordering::Relaxed)) / 1000;
-            format!("idle · {}", fmt_age(age))
-        }
-    };
-    let mut r = col().key(format!("term-{id}-{indent}")).px(8.0).py(5.0).ml(indent).radius(k.radius.md).gap(3.0)
-        .role("button").label(t.session.label())
-        .hover(hover_tint(k))
-        .on_press(move |s: &mut App| s.select_tab(id))
-        .child(
-            row().gap(8.0).items_center()
-                .child(label(">_", k.ty.text_xsmall, c.text_faint))
-                .child(label(t.session.label(), k.ty.ui, if active { c.text_base } else { c.text_muted }).truncate().shrink().min_w(0.0))
-                .child(spacer())
-                .child(status_dot(k, st)),
-        )
-        .child(label(second, k.ty.text_xsmall, c.text_faint).pl(26.0));
-    if active { r = r.fill(c.pressed); }
-    r
-}
-
-/// contr's ages: 5s, 3m, 2h. They move on a repaint, never on a timer of their own.
-fn fmt_age(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m", secs / 60),
-        _ => format!("{}h", secs / 3600),
-    }
 }
 
 // Tabs and terminal ─────────────

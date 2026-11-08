@@ -5,7 +5,7 @@
 //! draw it and writes key bytes to the PTY.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -58,7 +58,6 @@ impl EventListener for Events {
 
 pub struct Session {
     pub id: u64,
-    pub cwd: PathBuf,
     pub term: Arc<Mutex<Term<Events>>>,
     title: Arc<Mutex<Option<String>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -135,7 +134,7 @@ impl Session {
         // Reap the child so it doesn't linger as a zombie.
         std::thread::spawn(move || { let _ = child.wait(); });
 
-        Ok(Session { id, cwd: cwd.to_path_buf(), term, title, writer, master: pair.master, size, dirty, exited, last_output })
+        Ok(Session { id, term, title, writer, master: pair.master, size, dirty, exited, last_output })
     }
 
     pub fn write(&self, bytes: &[u8]) {
@@ -163,25 +162,6 @@ impl Session {
     pub fn scroll(&self, lines: i32) {
         self.term.lock().unwrap().scroll_display(Scroll::Delta(lines));
         self.dirty.store(true, Ordering::Release);
-    }
-
-    /// The sidebar label: the shell's OSC title, else `$ <folder>` (contr's rule for plain terminals).
-    pub fn label(&self) -> String {
-        if let Some(t) = self.title.lock().unwrap().as_ref().filter(|t| !t.trim().is_empty()) {
-            // Shells set `user@host:~/a/b`; the sidebar only needs `$ b`.
-            let t = t.trim();
-            let path = match t.split_once(':') {
-                Some((who, rest)) if who.contains('@') => rest.trim(),
-                _ => t,
-            };
-            if path.starts_with('~') || path.starts_with('/') {
-                let last = path.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path);
-                return format!("$ {last}");
-            }
-            return t.to_string();
-        }
-        let folder = self.cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
-        format!("$ {folder}")
     }
 
     /// The tab title: the program name from the shell's OSC title (see [`tab_title`]).
