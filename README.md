@@ -7,7 +7,7 @@ see how Rune compares with GPUI and MyGo for this kind of app, not a replacement
 ![contr-rune: projects with their terminals, tabs and a shell](docs/screenshot.png)
 
 - **Sidebar:** each project with its terminals under it, and a `+` to open one in that folder. Below,
-  the terminals grouped by state: **Working** (amber dot, output in the last 1.5 s) and **Idle**
+  the terminals grouped by state: **Working** (white dot, output in the last 1.5 s) and **Idle**
   (hollow ring, with how long it's been quiet).
 - **Tabs:** the selected project's terminals, labelled `$ <folder>` from the shell's title, with a
   working dot and `×`, plus `+` for a new one.
