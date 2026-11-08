@@ -1,0 +1,15 @@
+[package]
+name = "contr-rune"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "A small Rune port of contr's sidebar, tabs and terminal"
+
+[dependencies]
+# Rune is pre-release: pin a rev of `dev` (never rewritten).
+rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+
+[profile.dev.package."*"]
+opt-level = 2
