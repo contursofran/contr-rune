@@ -165,10 +165,10 @@ impl Session {
         self.dirty.store(true, Ordering::Release);
     }
 
-    /// The tab label: the shell's OSC title, else `$ <folder>` (contr's rule for plain terminals).
+    /// The sidebar label: the shell's OSC title, else `$ <folder>` (contr's rule for plain terminals).
     pub fn label(&self) -> String {
         if let Some(t) = self.title.lock().unwrap().as_ref().filter(|t| !t.trim().is_empty()) {
-            // Shells set `user@host:~/a/b`; a tab only needs `$ b`.
+            // Shells set `user@host:~/a/b`; the sidebar only needs `$ b`.
             let t = t.trim();
             let path = match t.split_once(':') {
                 Some((who, rest)) if who.contains('@') => rest.trim(),
@@ -182,5 +182,68 @@ impl Session {
         }
         let folder = self.cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
         format!("$ {folder}")
+    }
+
+    /// The tab title: the program name from the shell's OSC title (see [`tab_title`]).
+    pub fn tab_title(&self) -> String {
+        tab_title(self.title.lock().unwrap().as_deref(), &shell_name())
+    }
+}
+
+/// The name of the user's shell (`$SHELL`'s last path part), `shell` when unknown.
+pub fn shell_name() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .and_then(|s| s.trim_end_matches('/').rsplit('/').next().map(str::to_owned))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "shell".into())
+}
+
+/// A tab's title from the shell's OSC title: control characters stripped; `user@host:~/a/b` gives
+/// `b`; an empty title gives `fallback` (the shell's name).
+pub fn tab_title(osc: Option<&str>, fallback: &str) -> String {
+    let clean: String = osc.unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+    let t = clean.trim();
+    let path = match t.split_once(':') {
+        Some((who, rest)) if who.contains('@') => rest.trim(),
+        _ => t,
+    };
+    let out = if path.starts_with('~') || path.starts_with('/') {
+        path.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path)
+    } else {
+        t
+    };
+    if out.is_empty() { fallback.to_owned() } else { out.to_owned() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_title;
+
+    #[test]
+    fn empty_title_falls_back_to_the_shell() {
+        assert_eq!(tab_title(None, "zsh"), "zsh");
+        assert_eq!(tab_title(Some(""), "zsh"), "zsh");
+        assert_eq!(tab_title(Some("  \u{7}\n "), "zsh"), "zsh");
+    }
+
+    #[test]
+    fn control_characters_are_stripped() {
+        assert_eq!(tab_title(Some("go\u{1b}[0m test\u{7} ./..."), "zsh"), "go[0m test ./...");
+        assert_eq!(tab_title(Some("vim\r\n"), "zsh"), "vim");
+    }
+
+    #[test]
+    fn user_host_path_is_the_last_folder() {
+        assert_eq!(tab_title(Some("me@box:~/a/b"), "zsh"), "b");
+        assert_eq!(tab_title(Some("me@box:~/a/b/"), "zsh"), "b");
+        assert_eq!(tab_title(Some("/usr/local"), "zsh"), "local");
+        assert_eq!(tab_title(Some("~"), "zsh"), "~");
+    }
+
+    #[test]
+    fn programs_keep_their_arguments() {
+        assert_eq!(tab_title(Some("go test ./..."), "zsh"), "go test ./...");
+        assert_eq!(tab_title(Some("zsh"), "bash"), "zsh");
     }
 }

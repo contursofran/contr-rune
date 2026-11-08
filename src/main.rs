@@ -19,8 +19,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use alacritty_terminal::term::TermMode;
-use rune_kit::Kit;
-use rune::{AppSpec, Color, Cx, El, Key, KeyEvent, Tx, Waker, WheelEvent, col, el, row, spacer, text};
+use rune_kit::shell::{TabDragState, TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
+use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
+use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, el, row, spacer, text};
 
 use session::{Session, Size, now_ms};
 use theme::*;
@@ -59,6 +60,8 @@ struct App {
     statuses: Vec<(u64, Status)>,
     focused: bool,
     error: Option<String>,
+    /// Drag state of the title bar's tab strip.
+    tab_drag: TabDragState,
     /// The one kit every view reads colours, type and radius from.
     kit: Kit,
 }
@@ -97,6 +100,7 @@ fn init() -> App {
         statuses: Vec::new(),
         focused: true,
         error: None,
+        tab_drag: TabDragState::new(),
         kit: Kit::neutral(true),
     }
 }
@@ -146,6 +150,20 @@ impl App {
                 Some(next) => self.select_tab(*next),
                 None => self.active = None,
             }
+        }
+    }
+
+    /// Move the `from`-th tab of `project` to position `to` among that project's tabs.
+    fn reorder_tab(&mut self, project: usize, from: usize, to: usize) {
+        let slots: Vec<usize> = self.tabs.iter().enumerate().filter(|(_, t)| t.project == project).map(|(i, _)| i).collect();
+        if from >= slots.len() || to >= slots.len() || from == to { return; }
+        // The project's tabs keep their slots among the others; only their order changes.
+        let mut moved: Vec<Tab> = slots.iter().rev().map(|i| self.tabs.remove(*i)).collect();
+        moved.reverse();
+        let t = moved.remove(from);
+        moved.insert(to, t);
+        for (slot, t) in slots.iter().zip(moved) {
+            self.tabs.insert(*slot, t);
         }
     }
 
@@ -277,9 +295,11 @@ fn scroll_active(s: &mut App, lines: i32) {
 
 // ───────────────────────────── view ─────────────────────────────
 
-fn view(s: &App, _cx: &mut Cx<App>) -> El {
+fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = &s.kit;
-    shell::window(k, title_bar(k, s), sidebar(k, s), terminal_panel(k, s), shell::files_panel(k), Vec::new())
+    let mut layer = Vec::new();
+    let bar = title_bar(k, s, cx, &mut layer);
+    shell::window(k, bar, sidebar(k, s), terminal_panel(k, s), shell::files_panel(k), layer)
         .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
 }
 
@@ -419,41 +439,49 @@ fn fmt_age(secs: u64) -> String {
 
 // Tabs and terminal ─────────────
 
-fn title_bar(k: &Kit, s: &App) -> El {
-    let c = &k.c;
-    let mut tabs = row().gap(4.0).items_center().min_w(0.0).shrink();
-    for t in s.project_tabs(s.selected_project) {
-        let id = t.session.id;
-        let selected = s.active == Some(id);
-        let close = el().key(format!("close-{id}")).size(16.0, 16.0).radius(k.radius.sm).center()
-            .hover(c.pressed)
-            .role("button").label("Close tab")
-            .on_press(move |s: &mut App| s.close_tab(id))
-            .child(label("×", k.ty.ui, if selected { c.text_muted } else { c.icon_faint }));
-        let mut tab = row().key(format!("tab-{id}")).h(28.0).pl(10.0).pr(6.0).radius(k.radius.md).gap(7.0).items_center()
-            .max_w(220.0).min_w(0.0)
-            .role("tab").label(t.session.label()).checked(selected)
-            .hover(hover_tint(k))
-            .on_press(move |s: &mut App| s.select_tab(id))
-            .child(label(">_", k.ty.text_xsmall, c.text_faint))
-            .child(label(t.session.label(), k.ty.ui, if selected { c.text_base } else { c.text_muted }).truncate().shrink().min_w(0.0));
-        if s.status(id) == Status::Working {
-            tab = tab.child(el().size(7.0, 7.0).radius(3.5).fill(c.text_base));
-        }
-        tab = tab.child(close);
-        if selected { tab = tab.fill(c.pressed).border(1.0, c.border_muted); }
-        tabs = tabs.child(tab);
-    }
+// Icons from main.html (16 point view box), as in `examples/kit_preview.rs`.
+static TERM: Icon = Icon {
+    name: "contr-term",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l3 3.5-3 3.5M8 12h5"/></g>"#,
+};
+static PLUS: Icon = Icon {
+    name: "contr-plus",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M3 8h10"/></g>"#,
+};
+
+fn tab_id(id: u64) -> String { id.to_string() }
+
+fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>) -> El {
     let project = s.selected_project;
-    let plus = el().key("new-tab").size(28.0, 28.0).radius(k.radius.md).center()
-        .hover(c.hover)
-        .role("button").label("New terminal")
+    let titles: Vec<(u64, String)> = s.project_tabs(project).map(|t| (t.session.id, t.session.tab_title())).collect();
+    let items = titles.iter().map(|(id, title)| {
+        let status = (s.status(*id) == Status::Working).then_some(TabItemStatus::Busy);
+        TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status)
+    });
+    let active = s.active.map(tab_id);
+    let plus = IconButton::new(&PLUS)
+        .variant(IconButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .label("New tab")
         .on_press(move |s: &mut App| s.open_tab(project))
-        .child(label("+", k.ty.text_xsmall_medium, c.text_faint));
-    let name = s.projects.get(project).map(|p| p.name.clone()).unwrap_or_default();
-    // The leading area stays free for the macOS traffic lights; the tabs start after it.
-    let strip = row().gap(4.0).items_center().min_w(0.0).child(tabs).child(plus);
-    shell::titlebar(k, shell::lights_gap(), strip, vec![label(name, k.ty.text_xsmall, c.text_faint)])
+        .build(k)
+        .key("new-tab");
+    let strip = TabStrip::new("top", TabOrientation::Horizontal)
+        .tabs(items)
+        .active(active.as_deref())
+        .overflow(TabOverflow::ShrinkThenScroll { min_width: 28.0, max_width: TAB_MAX_WIDTH, pinned_width: 36.0, fade_width: 24.0 })
+        .viewport_width(cx.layout_size("top").map(|z| z[0]))
+        .drag_state(&s.tab_drag, |s: &mut App| &mut s.tab_drag)
+        .close_icon(k.glyph.close)
+        .trailing_action(plus)
+        .on_select(|s: &mut App, id: &str, _tx| { if let Ok(id) = id.parse() { s.select_tab(id); } })
+        .on_close(|s: &mut App, id: &str, _tx| { if let Ok(id) = id.parse() { s.close_tab(id); } })
+        .on_reorder(move |s: &mut App, r: TabReorder, _tx| s.reorder_tab(project, r.from, r.to))
+        .build_layered(k, layer);
+    // The leading area stays free for the macOS traffic lights; the tabs start after it. K5 fills the right side.
+    shell::titlebar(k, shell::lights_gap(), strip, Vec::new())
 }
 
 fn terminal_panel(k: &Kit, s: &App) -> El {
