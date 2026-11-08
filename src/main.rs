@@ -9,6 +9,7 @@
 //! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS).
 
 mod grid;
+mod icons;
 mod keys;
 mod session;
 mod theme;
@@ -18,7 +19,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use alacritty_terminal::term::TermMode;
-use rune::{AppSpec, Color, Cx, El, Key, KeyEvent, Tx, Waker, WheelEvent, col, el, row, spacer, text};
+use rune::{AppSpec, Color, Cx, El, Key, KeyEvent, Tx, Waker, WheelEvent, col, el, icon, row, spacer, text};
 
 use session::{Session, Size, now_ms};
 use theme::*;
@@ -55,6 +56,8 @@ struct App {
     size: Size,
     wheel: f32,
     statuses: Vec<(u64, Status)>,
+    /// The tab under the pointer: its `×` shows.
+    hovered_tab: Option<u64>,
     focused: bool,
     error: Option<String>,
 }
@@ -91,6 +94,7 @@ fn init() -> App {
         size: Size { cols: 100, rows: 30 },
         wheel: 0.0,
         statuses: Vec::new(),
+        hovered_tab: None,
         focused: true,
         error: None,
     }
@@ -446,43 +450,49 @@ fn fmt_age(secs: u64) -> String {
 
 fn title_bar(s: &App) -> El {
     let c = theme();
-    let mut tabs = row().gap(4.0).items_center().min_w(0.0).shrink();
-    for t in s.project_tabs(s.selected_project) {
+    let mut tabs = row().key("tabs").gap(SPACE_2).items_center().min_w(0.0).shrink();
+    for (i, t) in s.project_tabs(s.selected_project).enumerate() {
         let id = t.session.id;
         let selected = s.active == Some(id);
-        let close = el().key(format!("close-{id}")).size(16.0, 16.0).radius(4.0).center()
-            .hover(c.press)
-            .role("button").label("Close tab")
-            .on_press(move |s: &mut App| s.close_tab(id))
-            .child(label("×", ROW_SMALL, if selected { c.ink_62 } else { c.ink_30 }));
-        let mut tab = row().key(format!("tab-{id}")).h(28.0).pl(10.0).pr(6.0).radius(7.0).gap(7.0).items_center()
-            .max_w(220.0).min_w(0.0)
+        let ink = if selected { c.ink_100 } else { c.ink_50 };
+        let mut tab = row().key(format!("tab-{i}")).h(ROW_HEIGHT).px(SPACE_10).radius(RADIUS_8).gap(SPACE_8).items_center()
+            .max_w(TAB_MAX_WIDTH).min_w(0.0).shrink()
             .role("tab").label(t.session.label()).checked(selected)
-            .hover(hover_tint())
+            .hover(c.hover)
+            .on_hover_change(move |s: &mut App, inside, _tx| {
+                if inside {
+                    s.hovered_tab = Some(id);
+                } else if s.hovered_tab == Some(id) {
+                    s.hovered_tab = None;
+                }
+            })
             .on_press(move |s: &mut App| s.select_tab(id))
-            .child(label(">_", SMALL, c.ink_42))
-            .child(label(t.session.label(), ROW_SMALL, if selected { c.ink_100 } else { c.ink_62 }).truncate().shrink().min_w(0.0));
-        if s.status(id) == Status::Working {
-            tab = tab.child(el().size(7.0, 7.0).radius(3.5).fill(c.ink_100));
+            .child(icon(&icons::PROMPT, 14.0).color(ink))
+            .child(label(t.session.label(), ROW_SMALL, ink).truncate().shrink().min_w(0.0));
+        if selected || s.hovered_tab == Some(id) {
+            tab = tab.child(
+                el().key(format!("tab-{i}-close")).size(16.0, 16.0).radius(RADIUS_4).center().hover_group().hover(c.press)
+                    .role("button").label("Close tab")
+                    .on_press(move |s: &mut App| s.close_tab(id))
+                    .child(icon(&icons::CLOSE, 10.0).color(c.ink_45).group_color(c.ink_100)),
+            );
         }
-        tab = tab.child(close);
-        if selected { tab = tab.fill(c.selected).border(1.0, c.selected_line); }
+        if selected { tab = tab.fill(c.panel).border(1.0, c.panel_line); }
         tabs = tabs.child(tab);
     }
     let project = s.selected_project;
-    let plus = el().key("new-tab").size(28.0, 28.0).radius(6.0).center()
+    let plus = el().key("tab-new").size(26.0, 26.0).radius(RADIUS_8).center().ml(SPACE_2).hover_group()
         .hover(c.hover_strong)
-        .role("button").label("New terminal")
+        .role("button").label("New tab")
         .on_press(move |s: &mut App| s.open_tab(project))
-        .child(label("+", LABEL, c.ink_42));
-    let name = s.projects.get(project).map(|p| p.name.clone()).unwrap_or_default();
-    // The left area stays free for the macOS traffic lights; the tabs start after it.
-    row().h(TITLEBAR_HEIGHT).w_full().pr(SPACE_8).gap(SPACE_8).items_center().window_drag()
+        .child(icon(&icons::PLUS, 13.0).color(c.ink_50).group_color(c.ink_100));
+    tabs = tabs.child(plus);
+    // The left area stays free for the macOS traffic lights; the tabs start after it, at x=350.
+    // The right side is empty until part 7.
+    row().key("titlebar").h(TITLEBAR_HEIGHT).w_full().pr(SPACE_8).gap(SPACE_8).items_center().window_drag()
         .child(el().w(TITLEBAR_LEFT).h_full())
         .child(tabs)
-        .child(plus)
         .child(spacer())
-        .child(label(name, SMALL, c.ink_42).pr(6.0))
 }
 
 fn terminal_panel(s: &App) -> El {

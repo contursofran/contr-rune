@@ -165,22 +165,48 @@ impl Session {
         self.dirty.store(true, Ordering::Release);
     }
 
-    /// The tab label: the shell's OSC title, else `$ <folder>` (contr's rule for plain terminals).
+    /// The tab label: the shell's OSC title, else the shell's name ("zsh").
     pub fn label(&self) -> String {
-        if let Some(t) = self.title.lock().unwrap().as_ref().filter(|t| !t.trim().is_empty()) {
-            // Shells set `user@host:~/a/b`; a tab only needs `$ b`.
-            let t = t.trim();
-            let path = match t.split_once(':') {
-                Some((who, rest)) if who.contains('@') => rest.trim(),
-                _ => t,
-            };
-            if path.starts_with('~') || path.starts_with('/') {
-                let last = path.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path);
-                return format!("$ {last}");
-            }
-            return t.to_string();
-        }
-        let folder = self.cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
-        format!("$ {folder}")
+        label_from(self.title.lock().unwrap().as_deref(), &shell_name())
+    }
+}
+
+/// The default shell's name, from `$SHELL`.
+fn shell_name() -> String {
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    shell.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("shell").to_string()
+}
+
+/// A tab label from the shell's OSC title: `go test ./...` stays as is; `user@host:~/a/b` (what
+/// shells set at the prompt) shortens to `b`; no title falls back to the shell's name.
+fn label_from(title: Option<&str>, shell: &str) -> String {
+    let Some(t) = title.map(str::trim).filter(|t| !t.is_empty()) else { return shell.to_string() };
+    let path = match t.split_once(':') {
+        Some((who, rest)) if who.contains('@') => rest.trim(),
+        _ => t,
+    };
+    if path.starts_with('~') || path.starts_with('/') {
+        return path.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path).to_string();
+    }
+    t.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_from;
+
+    #[test]
+    fn label_uses_title_or_shell() {
+        assert_eq!(label_from(Some("go test ./..."), "zsh"), "go test ./...");
+        assert_eq!(label_from(Some("  vim  "), "zsh"), "vim");
+        assert_eq!(label_from(None, "zsh"), "zsh");
+        assert_eq!(label_from(Some("   "), "zsh"), "zsh");
+    }
+
+    #[test]
+    fn label_shortens_prompt_paths() {
+        assert_eq!(label_from(Some("me@host:~/code/contr"), "zsh"), "contr");
+        assert_eq!(label_from(Some("~/code/"), "zsh"), "code");
+        assert_eq!(label_from(Some("/"), "zsh"), "/");
     }
 }

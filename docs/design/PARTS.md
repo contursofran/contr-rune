@@ -29,13 +29,15 @@ To re-render `main.png`:
 - Check the result with `cargo run -- --snap out.png --scene <scene>` at 1710×1112 and compare it with
   `main.png`. Put both images (or a crop of the part) in the PR description.
 - Keep what already works (PTY, keys, scrollback) working.
+- Each part adds stable keys on its elements and a headless test in `tests/` that checks its bounds
+  (`--tree`) and its behaviour (`--script`), like `tests/tabs.rs`, plus the `--snap` image in `docs/design/snaps/`.
 
 ## Parts, in order
 
 | # | Part | Design components | Done when |
 |---|---|---|---|
 | 1 | Tokens and window shell | Window, Panel, TitleBar (left area only) | Theme has every dark token and type style; Inter is bundled; the window is glass (or its opaque composite), radius 14; 38 px title bar with room for the traffic lights; three panels (sidebar 334 / files 302 outer, 312 / 280 content; terminal in between) with gap 8, radius 12, `panel` fill and `panel-line` border. Existing content still works inside them. |
-| 2 | Tabs | Tab, IconButton | Tab strip in the title bar from x=342: height 30, max 180, 12.5 px Inter, selected = panel fill + inset line, hover fill, `×` 16 px on the selected tab, `+` 26 px button. Click, close, new, keys work. |
+| 2 | Tabs | Tab, IconButton | Tab strip in the title bar from x=350: height 30, max 180, 12.5 px Inter, selected = panel fill + inset line, hover fill, `×` 16 px on the selected tab, `+` 26 px button. Click, close, new, keys work. |
 | 3 | Terminal panel | Terminal | Padding 14/20/12, `terminal` type 13/20, `terminal-text` ink, ANSI palette readable on the panel, cursor like the design. |
 | 4 | Status glyph | StatusGlyph | Braille glyph: working (10 frames in 0.9 s), waiting (⠿ pulse 1.6 s), idle (⠶ at `ink-30`), needs-you (red). Animates only while on screen and working. Used in tabs. |
 | 5 | Sidebar projects | ProjectRow, AgentRow | "Projects" head with `+`; project row (folder icon, name 500 weight `ink-85`, branch meta); its terminals as rows under it (glyph, title, mono meta, age), rail line, selected row = `ink-100` with no fill. |

@@ -644,6 +644,7 @@ dependencies = [
  "alacritty_terminal",
  "portable-pty",
  "rune",
+ "serde_json",
 ]
 
 [[package]]
