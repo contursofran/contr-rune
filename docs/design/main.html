@@ -1,0 +1,212 @@
+<!doctype html>
+<!-- Board "1 · Orchestrator selected" (Main.dc.html) from the "contr · from zero" canvas,
+     artifact 45a3e113, version 1793994304-db1b. Dark theme, 1710×1112. Static copy (file tree shortened; every row kind kept): the reference for every part. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>contr · orchestrator selected</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap">
+<style>
+body{margin:0;background:#08090A}
+button{all:unset;cursor:pointer;font:inherit;color:inherit}
+button:focus-visible{outline:1px solid rgba(255,255,255,.5);outline-offset:2px;border-radius:8px}
+.item{display:flex;align-items:center;gap:10px;height:30px;padding:0 10px;border-radius:8px;color:rgba(255,255,255,.6);white-space:nowrap}
+.item:hover{background:rgba(255,255,255,.045)}
+.on{background:rgba(255,255,255,.085);box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);color:#F4F4F5}
+.sub{font-size:12px;color:rgba(255,255,255,.42)}
+.meta{font-size:12px;color:rgba(255,255,255,.38);margin-left:auto}
+.kids{margin-left:17px;padding-left:9px;border-left:1px solid rgba(255,255,255,.07);display:flex;flex-direction:column;gap:0}
+.icb{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.5)}
+.icb:hover{background:rgba(255,255,255,.06);color:#fff}
+.t{white-space:pre;height:20px}
+.d{color:rgba(255,255,255,.42)}
+.w{color:#E9E9EA}
+.br{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:17px;line-height:18px;height:18px;width:16px;align-self:center;text-align:center;flex-shrink:0;color:#F4F4F5}
+.br.spin::before{content:"⠋";animation:br .9s steps(1,end) infinite}
+.br.spin.slow::before{animation-duration:1.4s}
+.br.wait::before{content:"⠿";animation:pulse 1.6s ease-in-out infinite}
+.br.red{color:#F07178}
+.br.idle{color:rgba(255,255,255,.3)}
+.br.idle::before{content:"⠶"}
+@keyframes br{0%{content:"⠋"}10%{content:"⠙"}20%{content:"⠹"}30%{content:"⠸"}40%{content:"⠼"}50%{content:"⠴"}60%{content:"⠦"}70%{content:"⠧"}80%{content:"⠇"}90%{content:"⠏"}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.cl{flex-shrink:0;align-self:center;transform-origin:50% 50%}
+.cl.spin{animation:rot 2.4s linear infinite}
+.cl.idle{opacity:.45}
+.cl.red{stroke:#F07178}
+@keyframes rot{to{transform:rotate(360deg)}}
+.sel{color:#F4F4F5}
+.sel .sub{color:rgba(255,255,255,.62)}
+.tab{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:8px;max-width:180px;min-width:0;flex-shrink:1;font-size:12.5px;color:rgba(255,255,255,.5);white-space:nowrap}
+.tab:hover{background:rgba(255,255,255,.045)}
+.tab.on{color:#F4F4F5;background:rgba(20,21,24,0.85);box-shadow:inset 0 0 0 1px rgba(255,255,255,0.065)}
+.tab .br{font-size:14px;width:14px}
+.tab .cl{margin:0}
+.tl{overflow:hidden;text-overflow:ellipsis}
+.x{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;color:rgba(255,255,255,.45);flex-shrink:0}
+.x:hover{background:rgba(255,255,255,.08);color:#fff}
+.fr{display:flex;align-items:center;gap:7px;height:26px;padding:0 10px;border-radius:6px;font-size:12.5px;color:rgba(255,255,255,.5);white-space:nowrap;width:100%;box-sizing:border-box}
+.fr:hover{background:rgba(255,255,255,.045)}
+.fi{flex-shrink:0;color:rgba(255,255,255,.38)}
+.fr.ch{color:rgba(255,255,255,.9)}
+.fr.nw{color:rgba(255,255,255,.9)}
+.fn{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fd{color:rgba(255,255,255,.4);margin-left:auto;padding-left:8px;display:flex;gap:6px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;flex-shrink:0}
+.fr.dl{color:rgba(255,255,255,.24)}
+.fr.dl .fn{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.24)}
+.fr.dl .fd,.fr.dl .fi{color:rgba(255,255,255,.22)}
+.fd .rm{color:rgba(255,255,255,.24)}
+.fg{margin-left:16px;padding-left:4px;border-left:1px solid rgba(255,255,255,.06);display:flex;flex-direction:column}
+.kids.flat{border-left-color:transparent}
+.kids .kids{margin-top:4px}
+.gap{margin-top:8px}
+.pj{color:rgba(255,255,255,.85);font-weight:500}
+.pj .meta{color:rgba(255,255,255,.26)}
+@media (prefers-reduced-motion: reduce){.br::before,.cl{animation:none!important}}
+.mdl{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;line-height:16px;height:16px;padding:0 6px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.5);flex-shrink:0}
+.ib{margin-top:auto;padding:12px 10px 2px;border-top:1px solid rgba(255,255,255,.06);display:flex;flex-direction:column;gap:7px;font-size:12px;color:rgba(255,255,255,.42)}
+.ir{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
+.iv{margin-left:auto;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11.5px;color:rgba(255,255,255,.62);overflow:hidden;text-overflow:ellipsis;min-width:0}
+.cb{height:4px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden}
+.cb span{display:block;height:100%;border-radius:2px;background:rgba(255,255,255,.55)}
+.tc{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:15;display:flex;flex-direction:column;align-items:flex-end;gap:9px;padding:6px 0}
+.tc i{display:block;height:2px;border-radius:1px;background:rgba(255,255,255,.14)}
+.tc b{font:500 11px/14px "JetBrains Mono",ui-monospace,monospace;color:#F4F4F5;margin-bottom:3px}
+.tc i.n{background:#F4F4F5}
+.tc i.h{background:#F4F4F5}
+</style>
+</head>
+<body>
+<div style="width: 1710px; height: 1112px; position: relative; overflow: hidden; background: #0A0B0D; font-family: Inter, -apple-system, system-ui, sans-serif; font-size: 13px; line-height: 18px; color: #E9E9EA">
+  <div aria-hidden="true" style="position: absolute; left: -160px; top: -120px; width: 820px; height: 620px; border-radius: 50%; background: #3A5A8C; filter: blur(140px); opacity: 0.75"></div>
+  <div aria-hidden="true" style="position: absolute; right: -200px; bottom: -180px; width: 900px; height: 640px; border-radius: 50%; background: #6B4A2A; filter: blur(150px); opacity: 0.55"></div>
+  <div aria-hidden="true" style="position: absolute; left: 620px; top: 520px; width: 520px; height: 420px; border-radius: 50%; background: #2C3240; filter: blur(120px); opacity: 0.8"></div>
+
+  <div style="position: absolute; inset: 0; border-radius: 14px; background: rgba(20,21,24,0.7); backdrop-filter: blur(48px) saturate(140%); -webkit-backdrop-filter: blur(48px) saturate(140%); border: 1px solid rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); display: flex; flex-direction: column; overflow: hidden">
+
+    <header style="height: 38px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 0">
+      <div style="width: 342px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding-left: 18px; box-sizing: border-box"><span style="width: 12px; height: 12px; border-radius: 6px; background: #FF5F57"></span><span style="width: 12px; height: 12px; border-radius: 6px; background: #FEBC2E"></span><span style="width: 12px; height: 12px; border-radius: 6px; background: #28C840"></span></div>
+      <div role="tablist" aria-label="contr tabs" style="display: flex; align-items: center; gap: 2px; min-width: 0; flex-shrink: 1; overflow: hidden"><button type="button" role="tab" aria-selected="true" class="tab on"><svg class="cl spin" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#D97757" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M9.19 8.17L14.93 8.97M8.95 8.74L12.10 11.20M8.45 9.11L10.40 13.93M7.83 9.19L7.33 12.75M7.26 8.95L3.81 13.36M6.89 8.45L2.99 10.02M6.81 7.83L1.86 7.14M7.05 7.26L4.06 4.92M7.55 6.89L5.38 1.51M8.17 6.81L8.72 2.85M8.74 7.05L11.69 3.27M9.11 7.55L12.54 6.16"></path></svg><span class="tl">Agent board polish</span><span class="x" aria-label="Close tab" role="button"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"></path></svg></span></button><button type="button" role="tab" aria-selected="false" class="tab"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" style="flex-shrink: 0"><path d="M3 4.5l3 3.5-3 3.5M8 12h5"></path></svg><span class="tl">zsh</span></button><button type="button" role="tab" aria-selected="false" class="tab"><span class="br spin" role="img" aria-label="running"></span><span class="tl">go test ./...</span></button><button type="button" class="icb" aria-label="New tab" style="width: 26px; height: 26px; margin-left: 2px; flex-shrink: 0"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg></button></div>
+      <span style="flex-grow: 1"></span>
+      <span style="display: flex; align-items: center; gap: 16px; flex-shrink: 0; padding: 0 10px 0 16px; font-size: 12px; color: rgba(255,255,255,.42)">
+        <button type="button" style="display: flex; gap: 8px; padding: 4px 8px; border-radius: 7px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px" aria-label="Changed files: 120 lines added, 126 removed, 9 files"><span>+120</span><span style="color: rgba(255,255,255,.3)">−126</span><span>9 files</span></button>
+      </span>
+      <button type="button" class="icb" aria-label="Split terminal"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5"></rect><path d="M8 2.5v11"></path></svg></button>
+      <button type="button" class="icb" aria-label="Search"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5l3.5 3.5"></path></svg></button>
+      <button type="button" class="icb" aria-label="Hide files" aria-pressed="true" style="color: rgba(255,255,255,.8)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5"></rect><path d="M10 2.5v11"></path></svg></button>
+    </header>
+
+    <div style="flex-grow: 1; min-height: 0; display: flex; gap: 8px; padding: 0 8px 8px">
+
+      <nav aria-label="Projects" style="width: 312px; flex-shrink: 0; border-radius: 12px; background: rgba(20,21,24,0.85); border: 1px solid rgba(255,255,255,0.065); display: flex; flex-direction: column; padding: 12px 10px 10px">
+        <div style="display: flex; align-items: center; padding: 2px 4px 4px 10px">
+          <span style="font-size: 12px; font-weight: 500; color: rgba(255,255,255,.45); flex-grow: 1">Projects</span>
+          <button type="button" class="icb" aria-label="Open a folder"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg></button>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 2px">
+          <button type="button" class="item pj"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.5 1.6h5.9a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"></path></svg>contr<span class="meta">main</span></button>
+          <div class="kids flat">
+            <button type="button" class="item sel" style="height: auto; padding: 7px 10px; align-items: flex-start"><svg class="cl spin" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#D97757" stroke-width="1.7" stroke-linecap="round" role="img" aria-label="Claude, orchestrating"><path d="M9.19 8.17L14.93 8.97M8.95 8.74L12.10 11.20M8.45 9.11L10.40 13.93M7.83 9.19L7.33 12.75M7.26 8.95L3.81 13.36M6.89 8.45L2.99 10.02M6.81 7.83L1.86 7.14M7.05 7.26L4.06 4.92M7.55 6.89L5.38 1.51M8.17 6.81L8.72 2.85M8.74 7.05L11.69 3.27M9.11 7.55L12.54 6.16"></path></svg><span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1"><span style="overflow: hidden; text-overflow: ellipsis">Agent board polish</span><span class="sub" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; display: flex; gap: 10px"><span>opus</span><span style="margin-left: auto">14m</span></span></span></button>
+            <div class="kids">
+              <button type="button" class="item" style="height: auto; padding: 5px 10px; align-items: flex-start"><span class="br spin" role="img" aria-label="working"></span><span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1"><span style="overflow: hidden; text-overflow: ellipsis">Agent rows on ui.List</span><span class="sub" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; display: flex; gap: 10px"><span>b-241</span><span>sonnet</span><span style="margin-left: auto">6m</span></span></span></button>
+              <button type="button" class="item" style="height: auto; padding: 5px 10px; align-items: flex-start"><span class="br spin" role="img" aria-label="working"></span><span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1"><span style="overflow: hidden; text-overflow: ellipsis">Panel PR header</span><span class="sub" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; display: flex; gap: 10px"><span>b-268</span><span>sonnet</span><span style="margin-left: auto">11m</span></span></span></button>
+              <button type="button" class="item" style="height: auto; padding: 5px 10px; align-items: flex-start"><span class="br spin red" role="img" aria-label="needs you"></span><span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1"><span style="overflow: hidden; text-overflow: ellipsis">Checks on hc event</span><span class="sub" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; display: flex; gap: 10px"><span>b-250</span><span>sonnet</span><span style="margin-left: auto">2m</span></span></span></button>
+            </div>
+          </div>
+
+          <span style="height: 10px"></span>
+          <button type="button" class="item pj"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.5 1.6h5.9a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"></path></svg><span>example</span><span class="meta">main</span></button>
+          <div class="kids flat">
+            <button type="button" class="item" style="height: auto; padding: 7px 10px; align-items: flex-start"><svg class="cl idle" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#D97757" stroke-width="1.7" stroke-linecap="round" role="img" aria-label="Claude, idle"><path d="M9.19 8.17L14.93 8.97M8.95 8.74L12.10 11.20M8.45 9.11L10.40 13.93M7.83 9.19L7.33 12.75M7.26 8.95L3.81 13.36M6.89 8.45L2.99 10.02M6.81 7.83L1.86 7.14M7.05 7.26L4.06 4.92M7.55 6.89L5.38 1.51M8.17 6.81L8.72 2.85M8.74 7.05L11.69 3.27M9.11 7.55L12.54 6.16"></path></svg><span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1"><span style="overflow: hidden; text-overflow: ellipsis">Asset pipeline</span><span class="sub" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; display: flex; gap: 10px"><span>opus</span><span>idle</span><span style="margin-left: auto">1h</span></span></span></button>
+            <div class="kids">
+              <button type="button" class="item" style="height: auto; padding: 5px 10px; align-items: flex-start"><span class="br idle" role="img" aria-label="waiting"></span><span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1"><span style="overflow: hidden; text-overflow: ellipsis">Sprite atlas rebuild</span><span class="sub" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; display: flex; gap: 10px"><span>b-88</span><span>deepseek</span><span>CI</span><span style="margin-left: auto">25m</span></span></span></button>
+            </div>
+          </div>
+
+          <span style="height: 10px"></span>
+          <button type="button" class="item pj" style="color: rgba(255,255,255,.42)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.5 1.6h5.9a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"></path></svg><span>closed</span><span class="meta">nothing open</span></button>
+        </div>
+
+        <span style="flex-grow: 1"></span>
+        <div style="display: flex; flex-direction: column; gap: 0; padding-bottom: 8px">
+          <div style="display: flex; align-items: center; padding: 2px 4px 4px 10px">
+            <span style="font-size: 12px; font-weight: 500; color: rgba(255,255,255,.45); flex-grow: 1">Servers</span>
+            <button type="button" class="icb" aria-label="Add a server"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg></button>
+          </div>
+          <button type="button" class="item sel" aria-current="true"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="3" y="3" width="10" height="7" rx="1.2"></rect><path d="M1.5 12.5h13"></path></svg>this Mac<span class="meta">local</span></button>
+          <button type="button" class="item"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2" y="2.5" width="12" height="4.5" rx="1.5"></rect><rect x="2" y="9" width="12" height="4.5" rx="1.5"></rect><path d="M4.5 4.75h1M4.5 11.25h1"></path></svg><span>linux-pc</span><span class="meta">online</span></button>
+          <button type="button" class="item"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2" y="2.5" width="12" height="4.5" rx="1.5"></rect><rect x="2" y="9" width="12" height="4.5" rx="1.5"></rect><path d="M4.5 4.75h1M4.5 11.25h1"></path></svg>build-box<span class="meta">offline</span></button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 10px 2px; border-top: 1px solid rgba(255,255,255,.06); font-size: 12px; color: rgba(255,255,255,.4)">
+          <span style="flex-grow: 1"></span>
+          <button type="button" class="icb" aria-label="Settings" style="width: 24px; height: 24px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg></button>
+        </div>
+      </nav>
+
+      <section aria-label="Terminal" style="position: relative; flex-grow: 1; min-width: 0; border-radius: 12px; background: rgba(20,21,24,0.85); border: 1px solid rgba(255,255,255,0.065); display: flex; flex-direction: column; overflow: hidden">
+        <div class="tc" role="navigation" aria-label="Orchestrator messages, 3 new"><b>3</b><i class="" style="width: 8px"></i><i class="" style="width: 12px"></i><i class="" style="width: 8px"></i><i class="" style="width: 14px"></i><i class="n" style="width: 10px"></i><i class="n" style="width: 12px"></i><i class="n" style="width: 8px"></i></div>
+        <div style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 14px 20px 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; line-height: 20px; color: rgba(255,255,255,.82)">
+          <div class="t"><span class="w">●</span> spawn (contr)(worker: "b-241", profile: "builder", task: "#241 agent rows on ui.List")</div>
+          <div class="t d">  ⎿  started b-241 in hc terminal 17</div>
+          <div class="t"> </div>
+          <div class="t"><span class="w">●</span> spawn (contr)(worker: "b-268", profile: "builder", task: "#268 panel PR header")</div>
+          <div class="t d">  ⎿  started b-268 in hc terminal 18</div>
+          <div class="t"> </div>
+          <div class="t"><span class="w">●</span> b-250 reported: blocked at a permission prompt</div>
+          <div class="t d">    (wants to run go test -tags hccore ./internal/hc/...)</div>
+          <div class="t"> </div>
+          <div class="t"><span class="w">●</span> Three workers are out:</div>
+          <div class="t">    b-241  #241 agent rows on ui.List      building</div>
+          <div class="t">    b-268  #268 panel PR header            building</div>
+          <div class="t">    b-250  #250 checks on hc event         <span style="color: #F07178">blocked, needs your OK</span></div>
+          <div class="t"> </div>
+          <div class="t">  b-268 and b-250 both touch internal/app/panel.go. I'll merge</div>
+          <div class="t">  #268 first and have b-250 merge main before review.</div>
+          <div class="t"> </div>
+          <div class="t d">✻ Waiting for reports… (3 workers)</div>
+          <div style="margin-top: 14px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 9px 12px; color: #E9E9EA">&gt; <span style="background: #E9E9EA; display: inline-block; width: 8px; height: 17px; vertical-align: -3px"></span></div>
+          <div class="t d" style="margin-top: 6px; font-size: 12px">  ⏵⏵ auto mode on (shift+tab to cycle)</div>
+        </div>
+      </section>
+      <aside aria-label="Files" style="width: 280px; flex-shrink: 0; border-radius: 12px; background: rgba(20,21,24,0.85); border: 1px solid rgba(255,255,255,0.065); display: flex; flex-direction: column; padding: 12px 10px 10px; overflow: hidden">
+        <div style="display: flex; align-items: center; padding: 2px 4px 4px 10px">
+          <span style="font-size: 12px; font-weight: 500; color: rgba(255,255,255,.45); flex-grow: 1">contr</span>
+          <button type="button" class="icb" aria-label="Show changed files only"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"></path></svg></button>
+        </div>
+        <!-- File tree. Icons: closed folder, open folder, Go file, Markdown file, plain file. Rows: plain, .ch modified (+a −r), .nw new (+a), .dl deleted (struck, −r). -->
+        <div role="tree" aria-label="contr files" style="display: flex; flex-direction: column; gap: 0; min-height: 0; overflow: hidden">
+            <button type="button" class="fr" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.3l1.5 1.5h6.2a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"></path></svg><span class="fn">cmd</span></button>
+            <button type="button" class="fr" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.3l1.5 1.5h6.2a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"></path></svg><span class="fn">docs</span></button>
+            <button type="button" class="fr" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1.5 12V4.5a1 1 0 0 1 1-1h3.3l1.5 1.5h5.2a1 1 0 0 1 1 1V7"></path><path d="M1.5 12.5l1.9-4.8a1 1 0 0 1 .9-.7h10l-2 5.5z"></path></svg><span class="fn">internal</span></button>
+            <div class="fg">
+              <button type="button" class="fr" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.3l1.5 1.5h6.2a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"></path></svg><span class="fn">agents</span></button>
+              <button type="button" class="fr" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1.5 12V4.5a1 1 0 0 1 1-1h3.3l1.5 1.5h5.2a1 1 0 0 1 1 1V7"></path><path d="M1.5 12.5l1.9-4.8a1 1 0 0 1 .9-.7h10l-2 5.5z"></path></svg><span class="fn">app</span></button>
+              <div class="fg">
+                <button type="button" class="fr"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1 6.5h3M2 9h2.5"></path><ellipse cx="10" cy="8" rx="4.5" ry="3.5"></ellipse><circle cx="10" cy="8" r="1.2"></circle></svg><span class="fn">board.go</span></button>
+                <button type="button" class="fr ch" aria-label="panel.go, modified"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1 6.5h3M2 9h2.5"></path><ellipse cx="10" cy="8" rx="4.5" ry="3.5"></ellipse><circle cx="10" cy="8" r="1.2"></circle></svg><span class="fn">panel.go</span><span class="fd"><span>+38</span><span class="rm">−12</span></span></button>
+                <button type="button" class="fr nw" aria-label="tabs.go, new"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1 6.5h3M2 9h2.5"></path><ellipse cx="10" cy="8" rx="4.5" ry="3.5"></ellipse><circle cx="10" cy="8" r="1.2"></circle></svg><span class="fn">tabs.go</span><span class="fd"><span>+31</span></span></button>
+                <button type="button" class="fr dl" aria-label="topbar.go, deleted"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M1 6.5h3M2 9h2.5"></path><ellipse cx="10" cy="8" rx="4.5" ry="3.5"></ellipse><circle cx="10" cy="8" r="1.2"></circle></svg><span class="fn">topbar.go</span><span class="fd"><span class="rm">−52</span></span></button>
+              </div>
+            </div>
+            <button type="button" class="fr"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5"></rect><path d="M4 10.5v-5l2 2.5 2-2.5v5M11 5.5v5M9.5 9l1.5 1.5 1.5-1.5"></path></svg><span class="fn">AGENTS.md</span></button>
+            <button type="button" class="fr dl" aria-label="HANDOFF.md, deleted"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5"></rect><path d="M4 10.5v-5l2 2.5 2-2.5v5M11 5.5v5M9.5 9l1.5 1.5 1.5-1.5"></path></svg><span class="fn">HANDOFF.md</span><span class="fd"><span class="rm">−34</span></span></button>
+            <button type="button" class="fr"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="fi"><path d="M3.5 1.5h5.5l3.5 3.5v9.5h-9z"></path><path d="M9 1.5V5h3.5"></path></svg><span class="fn">NOTICE</span></button>
+        </div>
+        <div class="ib" aria-label="Agent info">
+          <div class="ir"><span>Context</span><span class="iv">90k of 200k  45%</span></div>
+          <div class="cb" role="meter" aria-valuenow="45" aria-valuemin="0" aria-valuemax="100" aria-label="Context used"><span style="width: 45%"></span></div>
+          <div style="height: 6px"></div>
+          <div class="ir"><span>Claude</span><span class="iv">38%</span></div>
+          <div class="cb" role="meter" aria-valuenow="38" aria-valuemin="0" aria-valuemax="100" aria-label="Claude plan used"><span style="width: 38%"></span></div>
+          <div style="height: 6px"></div>
+          <div class="ir"><span>Codex</span><span class="iv">12%</span></div>
+          <div class="cb" role="meter" aria-valuenow="12" aria-valuemin="0" aria-valuemax="100" aria-label="Codex plan used"><span style="width: 12%"></span></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+</body>
+</html>

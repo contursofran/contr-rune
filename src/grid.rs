@@ -49,17 +49,17 @@ fn resolve(c: AColor, colors: &Colors, fg: bool) -> Color {
         AColor::Named(n) => {
             if let Some(set) = colors[n] { return from_rgb(set); }
             match n {
-                NamedColor::Foreground | NamedColor::BrightForeground => theme::TERM_FG(),
-                NamedColor::DimForeground => theme::TEXT_2(),
-                NamedColor::Background => theme::TERM_BG(),
-                NamedColor::Cursor => theme::TERM_FG(),
+                NamedColor::Foreground | NamedColor::BrightForeground => theme::theme().terminal_text,
+                NamedColor::DimForeground => theme::theme().ink_62,
+                NamedColor::Background => theme::theme().panel_solid,
+                NamedColor::Cursor => theme::theme().terminal_text,
                 n if (n as usize) < 16 => indexed(n as u8),
                 // Dim variants: the normal colour, dimmed.
                 n if (n as usize) >= NamedColor::DimBlack as usize => {
                     let base = n as usize - NamedColor::DimBlack as usize;
-                    indexed(base as u8).mix(theme::TERM_BG(), 0.35)
+                    indexed(base as u8).mix(theme::theme().panel_solid, 0.35)
                 }
-                _ => if fg { theme::TERM_FG() } else { theme::TERM_BG() },
+                _ => if fg { theme::theme().terminal_text } else { theme::theme().panel_solid },
             }
         }
     }
@@ -97,21 +97,21 @@ pub fn lines(term: &Term<Events>, focused: bool) -> Vec<Line> {
             std::mem::swap(&mut fg, &mut bg);
             has_bg = true;
         }
-        if cell.flags.contains(Flags::DIM) { fg = fg.mix(theme::TERM_BG(), 0.4); }
+        if cell.flags.contains(Flags::DIM) { fg = fg.mix(theme::theme().panel_solid, 0.4); }
         let is_cursor = show_cursor && cell.point == cursor;
         if is_cursor {
             if focused {
-                bg = theme::TERM_FG();
-                fg = theme::TERM_BG();
+                bg = theme::theme().terminal_text;
+                fg = theme::theme().panel_solid;
                 has_bg = true;
             } else {
                 // Unfocused window: hollow-ish cursor, as terminals draw it.
-                bg = theme::LINE_STRONG();
+                bg = theme::theme().selected;
                 has_bg = true;
             }
         }
 
-        let default_fg = fg == theme::TERM_FG();
+        let default_fg = fg == theme::theme().terminal_text;
         let plain = default_fg && !has_bg && !cell.flags.intersects(Flags::BOLD | Flags::ITALIC | Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
         if !(plain && ch == ' ') { keep[r] = end; }
         if plain { continue; }
