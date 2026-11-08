@@ -11,6 +11,7 @@
 mod grid;
 mod keys;
 mod session;
+mod shell;
 mod theme;
 
 use std::path::PathBuf;
@@ -18,6 +19,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use alacritty_terminal::term::TermMode;
+use rune_kit::Kit;
 use rune::{AppSpec, Color, Cx, El, Key, KeyEvent, Tx, Waker, WheelEvent, col, el, row, spacer, text};
 
 use session::{Session, Size, now_ms};
@@ -57,6 +59,8 @@ struct App {
     statuses: Vec<(u64, Status)>,
     focused: bool,
     error: Option<String>,
+    /// The one kit every view reads colours, type and radius from.
+    kit: Kit,
 }
 
 fn init() -> App {
@@ -93,6 +97,7 @@ fn init() -> App {
         statuses: Vec::new(),
         focused: true,
         error: None,
+        kit: Kit::neutral(true),
     }
 }
 
@@ -273,95 +278,65 @@ fn scroll_active(s: &mut App, lines: i32) {
 // ───────────────────────────── view ─────────────────────────────
 
 fn view(s: &App, _cx: &mut Cx<App>) -> El {
-    let c = theme();
-    // The window: `glass-window` over `ground` (opaque for now), radius 14, `window-line` border.
-    // A title bar, then three panels.
-    col()
-        .w_full()
-        .h_full()
-        .fill(c.window_solid)
-        .radius(RADIUS_14)
-        .border(1.0, c.window_line)
-        .clip_rounded(RADIUS_14)
+    let k = &s.kit;
+    shell::window(k, title_bar(k, s), sidebar(k, s), terminal_panel(k, s), shell::files_panel(k), Vec::new())
         .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
-        .child(title_bar(s))
-        .child(
-            row().grow(1.0).min_h(0.0).w_full().gap(SPACE_8).px(SPACE_8).pb(SPACE_8)
-                .child(sidebar(s))
-                .child(terminal_panel(s))
-                .child(files_panel()),
-        )
-}
-
-/// A panel: `panel` fill, 1 px `panel-line` border, radius 12, no shadow.
-fn panel() -> El {
-    let c = theme();
-    col().fill(c.panel).border(1.0, c.panel_line).radius(RADIUS_12).clip_rounded(RADIUS_12)
-}
-
-/// Part 8 fills this.
-fn files_panel() -> El {
-    panel().key("files").w(FILES_WIDTH).h_full().min_h(0.0)
 }
 
 fn label(t: impl Into<String>, style: rune::tok::TextStyle, color: Color) -> El {
     text(t.into()).font(style).color(color)
 }
 
-fn hover_tint() -> Color { theme().hover }
+fn hover_tint(k: &Kit) -> Color { k.c.hover }
 
 // Sidebar ─────────────
 
-fn sidebar(s: &App) -> El {
-    let c = theme();
+fn sidebar(k: &Kit, s: &App) -> El {
+    let c = &k.c;
     let mut projects = col().gap(2.0).px(6.0);
     for (i, p) in s.projects.iter().enumerate() {
-        projects = projects.child(project_row(s, i, p));
+        projects = projects.child(project_row(k, s, i, p));
         for t in s.project_tabs(i) {
-            projects = projects.child(terminal_row(s, t, 22.0));
+            projects = projects.child(terminal_row(k, s, t, 22.0));
         }
     }
 
     let working: Vec<&Tab> = s.tabs.iter().filter(|t| s.status(t.session.id) == Status::Working).collect();
     let idle: Vec<&Tab> = s.tabs.iter().filter(|t| s.status(t.session.id) == Status::Idle).collect();
     let mut agents = col().gap(2.0).px(6.0);
-    for (title, color, group) in [("Working", c.ink_100, &working), ("Idle", c.ink_42, &idle)] {
+    for (title, color, group) in [("Working", c.text_base, &working), ("Idle", c.text_faint, &idle)] {
         if group.is_empty() { continue; }
-        agents = agents.child(label(format!("{title} {}", group.len()), SMALL, color).px(6.0).pt(6.0).pb(2.0));
+        agents = agents.child(label(format!("{title} {}", group.len()), k.ty.text_xsmall, color).px(6.0).pt(6.0).pb(2.0));
         for t in group.iter() {
-            agents = agents.child(terminal_row(s, t, 0.0));
+            agents = agents.child(terminal_row(k, s, t, 0.0));
         }
     }
 
-    panel()
-        .key("sidebar")
-        .w(SIDEBAR_WIDTH)
-        .h_full()
-        .min_h(0.0)
+    shell::sidebar_panel(k)
         .child(
             row().h(40.0).px(14.0).items_center().window_drag()
-                .child(label("contr", LABEL, c.ink_100))
+                .child(label("contr", k.ty.text_xsmall_medium, c.text_base))
                 .child(spacer())
-                .child(label("rune", SMALL, c.ink_30)),
+                .child(label("rune", k.ty.text_xsmall, c.icon_faint)),
         )
-        .child(section_header("Spaces", s.projects.len()))
-        .child(label("This computer", SMALL, c.ink_42).px(14.0).pb(4.0))
+        .child(section_header(k, "Spaces", s.projects.len()))
+        .child(label("This computer", k.ty.text_xsmall, c.text_faint).px(14.0).pb(4.0))
         .child(projects)
         .child(spacer())
-        .child(section_header("Terminals", s.tabs.len()))
+        .child(section_header(k, "Terminals", s.tabs.len()))
         .child(agents)
         .child(
             row().h(30.0).px(14.0).items_center()
-                .child(label(s.error.clone().unwrap_or_default(), SMALL, c.blocked).truncate()),
+                .child(label(s.error.clone().unwrap_or_default(), k.ty.text_xsmall, c.danger.icon).truncate()),
         )
 }
 
-fn section_header(title: &str, n: usize) -> El {
-    let c = theme();
+fn section_header(k: &Kit, title: &str, n: usize) -> El {
+    let c = &k.c;
     row().px(14.0).pt(10.0).pb(6.0).items_center()
-        .child(label(title, ROW_SMALL, c.ink_42))
+        .child(label(title, k.ty.ui, c.text_faint))
         .child(spacer())
-        .child(label(n.to_string(), SMALL, c.ink_30))
+        .child(label(n.to_string(), k.ty.text_xsmall, c.icon_faint))
 }
 
 fn initials(name: &str) -> String {
@@ -374,39 +349,39 @@ fn initials(name: &str) -> String {
     s.to_uppercase()
 }
 
-fn project_row(s: &App, i: usize, p: &Project) -> El {
-    let c = theme();
+fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
+    let c = &k.c;
     let selected = i == s.selected_project;
     let count = s.project_tabs(i).count();
-    let tile = el().size(20.0, 20.0).radius(5.0).fill(c.selected).border(1.0, c.selected_line).center()
-        .child(label(initials(&p.name), SMALL, c.ink_62));
-    let add = el().key(format!("add-{i}")).size(20.0, 20.0).radius(5.0).center().hover(c.press)
+    let tile = el().size(20.0, 20.0).radius(k.radius.sm).fill(c.pressed).border(1.0, c.border_muted).center()
+        .child(label(initials(&p.name), k.ty.text_xsmall, c.text_muted));
+    let add = el().key(format!("add-{i}")).size(20.0, 20.0).radius(k.radius.sm).center().hover(c.pressed)
         .role("button").label("New terminal here")
         .on_press(move |s: &mut App| s.open_tab(i))
-        .child(label("+", ROW_SMALL, c.ink_42));
-    let mut r = row().key(format!("project-{i}")).px(8.0).py(6.0).radius(6.0).gap(8.0).items_center()
+        .child(label("+", k.ty.ui, c.text_faint));
+    let mut r = row().key(format!("project-{i}")).px(8.0).py(6.0).radius(k.radius.md).gap(8.0).items_center()
         .role("button").label(p.name.clone())
-        .hover(hover_tint())
+        .hover(hover_tint(k))
         .on_press(move |s: &mut App| s.select_project(i))
         .child(tile)
-        .child(label(p.name.clone(), ROW_SMALL, if selected { c.ink_100 } else { c.ink_62 }).truncate().shrink().min_w(0.0))
+        .child(label(p.name.clone(), k.ty.ui, if selected { c.text_base } else { c.text_muted }).truncate().shrink().min_w(0.0))
         .child(spacer())
-        .child(label(if count > 0 { count.to_string() } else { String::new() }, SMALL, c.ink_30))
+        .child(label(if count > 0 { count.to_string() } else { String::new() }, k.ty.text_xsmall, c.icon_faint))
         .child(add);
-    if selected { r = r.fill(c.selected).border(1.0, c.selected_line); }
+    if selected { r = r.fill(c.pressed).border(1.0, c.border_muted); }
     r
 }
 
-fn status_dot(st: Status) -> El {
-    let c = theme();
+fn status_dot(k: &Kit, st: Status) -> El {
+    let c = &k.c;
     match st {
-        Status::Working => el().size(7.0, 7.0).radius(3.5).fill(c.ink_100),
-        Status::Idle => el().size(9.0, 9.0).radius(4.5).border(1.6, c.ink_30),
+        Status::Working => el().size(7.0, 7.0).radius(3.5).fill(c.text_base),
+        Status::Idle => el().size(9.0, 9.0).radius(4.5).border(1.6, c.icon_faint),
     }
 }
 
-fn terminal_row(s: &App, t: &Tab, indent: f32) -> El {
-    let c = theme();
+fn terminal_row(k: &Kit, s: &App, t: &Tab, indent: f32) -> El {
+    let c = &k.c;
     let id = t.session.id;
     let active = s.active == Some(id);
     let st = s.status(id);
@@ -417,19 +392,19 @@ fn terminal_row(s: &App, t: &Tab, indent: f32) -> El {
             format!("idle · {}", fmt_age(age))
         }
     };
-    let mut r = col().key(format!("term-{id}-{indent}")).px(8.0).py(5.0).ml(indent).radius(6.0).gap(3.0)
+    let mut r = col().key(format!("term-{id}-{indent}")).px(8.0).py(5.0).ml(indent).radius(k.radius.md).gap(3.0)
         .role("button").label(t.session.label())
-        .hover(hover_tint())
+        .hover(hover_tint(k))
         .on_press(move |s: &mut App| s.select_tab(id))
         .child(
             row().gap(8.0).items_center()
-                .child(label(">_", SMALL, c.ink_42))
-                .child(label(t.session.label(), ROW_SMALL, if active { c.ink_100 } else { c.ink_62 }).truncate().shrink().min_w(0.0))
+                .child(label(">_", k.ty.text_xsmall, c.text_faint))
+                .child(label(t.session.label(), k.ty.ui, if active { c.text_base } else { c.text_muted }).truncate().shrink().min_w(0.0))
                 .child(spacer())
-                .child(status_dot(st)),
+                .child(status_dot(k, st)),
         )
-        .child(label(second, SMALL, c.ink_42).pl(26.0));
-    if active { r = r.fill(c.selected); }
+        .child(label(second, k.ty.text_xsmall, c.text_faint).pl(26.0));
+    if active { r = r.fill(c.pressed); }
     r
 }
 
@@ -444,68 +419,64 @@ fn fmt_age(secs: u64) -> String {
 
 // Tabs and terminal ─────────────
 
-fn title_bar(s: &App) -> El {
-    let c = theme();
+fn title_bar(k: &Kit, s: &App) -> El {
+    let c = &k.c;
     let mut tabs = row().gap(4.0).items_center().min_w(0.0).shrink();
     for t in s.project_tabs(s.selected_project) {
         let id = t.session.id;
         let selected = s.active == Some(id);
-        let close = el().key(format!("close-{id}")).size(16.0, 16.0).radius(4.0).center()
-            .hover(c.press)
+        let close = el().key(format!("close-{id}")).size(16.0, 16.0).radius(k.radius.sm).center()
+            .hover(c.pressed)
             .role("button").label("Close tab")
             .on_press(move |s: &mut App| s.close_tab(id))
-            .child(label("×", ROW_SMALL, if selected { c.ink_62 } else { c.ink_30 }));
-        let mut tab = row().key(format!("tab-{id}")).h(28.0).pl(10.0).pr(6.0).radius(7.0).gap(7.0).items_center()
+            .child(label("×", k.ty.ui, if selected { c.text_muted } else { c.icon_faint }));
+        let mut tab = row().key(format!("tab-{id}")).h(28.0).pl(10.0).pr(6.0).radius(k.radius.md).gap(7.0).items_center()
             .max_w(220.0).min_w(0.0)
             .role("tab").label(t.session.label()).checked(selected)
-            .hover(hover_tint())
+            .hover(hover_tint(k))
             .on_press(move |s: &mut App| s.select_tab(id))
-            .child(label(">_", SMALL, c.ink_42))
-            .child(label(t.session.label(), ROW_SMALL, if selected { c.ink_100 } else { c.ink_62 }).truncate().shrink().min_w(0.0));
+            .child(label(">_", k.ty.text_xsmall, c.text_faint))
+            .child(label(t.session.label(), k.ty.ui, if selected { c.text_base } else { c.text_muted }).truncate().shrink().min_w(0.0));
         if s.status(id) == Status::Working {
-            tab = tab.child(el().size(7.0, 7.0).radius(3.5).fill(c.ink_100));
+            tab = tab.child(el().size(7.0, 7.0).radius(3.5).fill(c.text_base));
         }
         tab = tab.child(close);
-        if selected { tab = tab.fill(c.selected).border(1.0, c.selected_line); }
+        if selected { tab = tab.fill(c.pressed).border(1.0, c.border_muted); }
         tabs = tabs.child(tab);
     }
     let project = s.selected_project;
-    let plus = el().key("new-tab").size(28.0, 28.0).radius(6.0).center()
-        .hover(c.hover_strong)
+    let plus = el().key("new-tab").size(28.0, 28.0).radius(k.radius.md).center()
+        .hover(c.hover)
         .role("button").label("New terminal")
         .on_press(move |s: &mut App| s.open_tab(project))
-        .child(label("+", LABEL, c.ink_42));
+        .child(label("+", k.ty.text_xsmall_medium, c.text_faint));
     let name = s.projects.get(project).map(|p| p.name.clone()).unwrap_or_default();
-    // The left area stays free for the macOS traffic lights; the tabs start after it.
-    row().h(TITLEBAR_HEIGHT).w_full().pr(SPACE_8).gap(SPACE_8).items_center().window_drag()
-        .child(el().w(TITLEBAR_LEFT).h_full())
-        .child(tabs)
-        .child(plus)
-        .child(spacer())
-        .child(label(name, SMALL, c.ink_42).pr(6.0))
+    // The leading area stays free for the macOS traffic lights; the tabs start after it.
+    let strip = row().gap(4.0).items_center().min_w(0.0).child(tabs).child(plus);
+    shell::titlebar(k, shell::lights_gap(), strip, vec![label(name, k.ty.text_xsmall, c.text_faint)])
 }
 
-fn terminal_panel(s: &App) -> El {
-    let c = theme();
+fn terminal_panel(k: &Kit, s: &App) -> El {
+    let c = &k.c;
     let Some(t) = s.active_tab() else {
-        return panel().grow(1.0).h_full().min_w(0.0).center().gap(8.0)
-            .child(label("No terminal in this project", ROW_SMALL, c.ink_42))
-            .child(label("+ or Ctrl+Shift+T opens one", SMALL, c.ink_30));
+        return shell::terminal_panel(k).center().gap(8.0)
+            .child(label("No terminal in this project", k.ty.ui, c.text_faint))
+            .child(label("+ or Ctrl+Shift+T opens one", k.ty.text_xsmall, c.icon_faint));
     };
     let cwd = t.session.cwd.display().to_string();
     let home = std::env::var("HOME").unwrap_or_default();
     let cwd = if !home.is_empty() && cwd.starts_with(&home) { format!("~{}", &cwd[home.len()..]) } else { cwd };
     let header = row().h(34.0).px(12.0).gap(8.0).items_center()
-        .child(label(">_", SMALL, c.ink_42))
-        .child(label(t.session.label(), ROW_SMALL, c.ink_100).truncate().shrink().min_w(0.0))
-        .child(label("·", ROW_SMALL, c.ink_30))
-        .child(label(cwd, SMALL, c.ink_42).truncate().shrink().min_w(0.0))
+        .child(label(">_", k.ty.text_xsmall, c.text_faint))
+        .child(label(t.session.label(), k.ty.ui, c.text_base).truncate().shrink().min_w(0.0))
+        .child(label("·", k.ty.ui, c.icon_faint))
+        .child(label(cwd, k.ty.text_xsmall, c.text_faint).truncate().shrink().min_w(0.0))
         .child(spacer())
-        .child(label(format!("{}×{}", s.size.cols, s.size.rows), SMALL, c.ink_30));
+        .child(label(format!("{}×{}", s.size.cols, s.size.rows), k.ty.text_xsmall, c.icon_faint));
 
     let lines = {
         let term = t.session.term.lock().unwrap();
-        grid::lines(&term, s.focused)
+        grid::lines(&term, s.focused, &grid::Ink::from_kit(k))
     };
     let mut grid_el = col()
         .key("grid")
@@ -525,13 +496,13 @@ fn terminal_panel(s: &App) -> El {
         });
     for (i, line) in lines.into_iter().enumerate() {
         grid_el = grid_el.child(
-            text(line.text).key(format!("l{i}")).font(TERMINAL).color(c.terminal_text).spans(line.spans).h(LINE_H),
+            text(line.text).key(format!("l{i}")).font(TERMINAL).color(c.text_base).spans(line.spans).h(LINE_H),
         );
     }
 
-    panel().key("terminal").grow(1.0).h_full().min_w(0.0).min_h(0.0)
+    shell::terminal_panel(k)
         .child(header)
-        .child(el().w_full().h(1.0).fill(c.hairline))
+        .child(el().w_full().h(1.0).fill(c.border_muted))
         .child(col().grow(1.0).min_h(0.0).w_full().px(10.0).py(8.0).child(grid_el))
 }
 
