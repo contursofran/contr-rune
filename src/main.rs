@@ -8,6 +8,7 @@
 //! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS).
 
 mod diff;
+mod files;
 mod grid;
 mod keys;
 mod session;
@@ -22,10 +23,11 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
 use rune_kit::shell::{TabDragState, TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, State};
-use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, text};
+use rune_kit::{Button, ButtonVariant, ControlSize, FileNode, IconButton, IconButtonVariant, Kit, State, Tree, TreeItem, TreeStyle};
+use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, row, spacer, text};
 
 use diff::DiffSummary;
+use files::{Change, Kind, Scan};
 use session::{Session, Size, now_ms};
 use theme::*;
 
@@ -81,8 +83,12 @@ struct App {
     /// A git run is in flight.
     diff_inflight: bool,
     diff_last: Option<Instant>,
-    diff_tx: Sender<(PathBuf, Option<DiffSummary>)>,
-    diff_rx: Receiver<(PathBuf, Option<DiffSummary>)>,
+    diff_tx: Sender<(PathBuf, Scan)>,
+    diff_rx: Receiver<(PathBuf, Scan)>,
+    /// The selected project's file tree (from the same scan as `diff`).
+    tree: files::Model,
+    /// The files panel shows only changed files and their folders.
+    changed_only: bool,
 }
 
 fn init() -> App {
@@ -130,6 +136,8 @@ fn init() -> App {
         diff_last: None,
         diff_tx,
         diff_rx,
+        tree: files::empty(),
+        changed_only: false,
     }
 }
 
@@ -243,11 +251,29 @@ impl App {
         self.projects.get(self.selected_project).map(|p| p.path.clone())
     }
 
-    /// Compute the summary now, on this thread (scenes only: a headless run cannot wait for the thread).
+    /// Compute the summary and tree now, on this thread (scenes only: a headless run cannot wait for the thread).
     fn refresh_diff_now(&mut self) {
         self.diff_for = self.selected_path();
-        self.diff = self.diff_for.as_deref().and_then(diff::summarize).filter(|d| d.files > 0);
+        if let Some(path) = self.diff_for.clone() {
+            self.apply_scan(files::scan(&path));
+        }
         self.diff_stale = false;
+    }
+
+    /// Take a finished scan: the title bar's summary and the files tree, which keeps its open
+    /// folders and selection.
+    fn apply_scan(&mut self, scan: Scan) {
+        self.diff = scan.summary.filter(|d| d.files > 0);
+        let mut model = scan.model;
+        let old = std::mem::replace(&mut self.tree, files::empty());
+        files::carry_state(&mut model, old);
+        files::set_changed_only(&mut model, self.changed_only);
+        self.tree = model;
+    }
+
+    fn toggle_changed_only(&mut self) {
+        self.changed_only = !self.changed_only;
+        files::set_changed_only(&mut self.tree, self.changed_only);
     }
 
     /// Run git on a thread; `poll` picks the result up.
@@ -258,7 +284,7 @@ impl App {
         self.diff_last = Some(Instant::now());
         let (tx, waker) = (self.diff_tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
-            let _ = tx.send((path.clone(), diff::summarize(&path)));
+            let _ = tx.send((path.clone(), files::scan(&path)));
             if let Some(w) = &waker { w(); }
         });
     }
@@ -335,10 +361,10 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
 fn poll_diff(s: &mut App, finished: bool, tx: &mut Tx) -> bool {
     let mut changed = false;
     let path = s.selected_path();
-    while let Ok((from, sum)) = s.diff_rx.try_recv() {
+    while let Ok((from, scan)) = s.diff_rx.try_recv() {
         s.diff_inflight = false;
         if Some(&from) == path.as_ref() {
-            s.diff = sum.filter(|d| d.files > 0);
+            s.apply_scan(scan);
             s.diff_for = Some(from);
             changed = true;
         }
@@ -346,6 +372,7 @@ fn poll_diff(s: &mut App, finished: bool, tx: &mut Tx) -> bool {
     let new_project = s.diff_for != path;
     if new_project {
         s.diff = None;
+        s.tree = files::empty();
         s.diff_for = path;
         s.diff_stale = true;
         changed = true;
@@ -410,7 +437,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = &s.kit;
     let mut layer = Vec::new();
     let bar = title_bar(k, s, cx, &mut layer);
-    shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), s.show_files.then(|| shell::files_panel(k)), layer)
+    shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
 }
 
@@ -510,6 +537,84 @@ fn trailing(k: &Kit, s: &App) -> Vec<El> {
             .key("files-toggle"),
     );
     items
+}
+
+// Files ─────────────
+
+static FILTER: Icon = Icon {
+    name: "contr-filter",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></g>"#,
+};
+
+/// The files card: the project name and the changed-only toggle, then the tree. (The usage meters
+/// wait for agent data, part K7.)
+fn files_panel(k: &Kit, s: &App) -> El {
+    let c = &k.c;
+    let name = s.projects.get(s.selected_project).map(|p| p.name.clone()).unwrap_or_default();
+    let label_ = "Show changed files only";
+    let toggle = IconButton::new(&FILTER)
+        .variant(IconButtonVariant::GhostMuted)
+        .control_size(ControlSize::Large)
+        .label(label_)
+        .help(label_)
+        .state(if s.changed_only { State::Pressed } else { State::Rest })
+        .on_press(|s: &mut App| s.toggle_changed_only())
+        .build(k)
+        .key("files-changed-only");
+    let head = row()
+        .key("files/head")
+        .w_full()
+        .h(28.0)
+        .pl(10.0)
+        .pr(2.0)
+        .center_y()
+        .child(text(name).key("files/title").font(k.ty.small_medium).color(c.text_faint))
+        .child(spacer())
+        .child(toggle);
+    let body = if s.changed_only && s.tree.visible_len() == 0 {
+        col().grow(1.0).min_h(0.0).w_full().pt(12.0).px(10.0).child(label("No changed files", k.ty.text_small, c.text_faint))
+    } else {
+        file_tree(k, s)
+    };
+    shell::files_panel(k).padding(10.0).child(head).child(body)
+}
+
+fn file_tree(k: &Kit, s: &App) -> El {
+    let c = &k.c;
+    let style = {
+        let mut st = TreeStyle::from_kit(k).label(ROW_SMALL, c.text_muted, c.text_strong).hover(c.hover);
+        st.row_height = FILE_ROW_HEIGHT;
+        st.indent = 21.0;
+        st
+    };
+    let (rest, strong, faint) = (c.text_muted, c.text_strong, c.text_faint);
+    let root = s.selected_path();
+    Tree::new(|s: &App| &s.tree, |s: &mut App| &mut s.tree, |n: &FileNode<Change>| n.name.as_str())
+        .name("Files")
+        .style(style)
+        .row(move |n, r| {
+            let item = TreeItem::file(n, r);
+            match n.data {
+                Some(Change { added, removed, kind }) => {
+                    let item = match kind {
+                        Kind::Modified | Kind::New => item.label_color(strong),
+                        Kind::Deleted => item.label_color(faint).icon_color(faint),
+                        Kind::Plain => item.label_color(rest),
+                    };
+                    if added + removed > 0 { item.changes(added, removed) } else { item }
+                }
+                None => item,
+            }
+        })
+        .on_open(move |_s: &mut App, id: &str, _tx| {
+            if let Some(root) = &root {
+                files::open_with_default_app(&root.join(id));
+            }
+        })
+        .build(s, k)
+        .grow(1.0)
+        .min_h(0.0)
 }
 
 fn terminal_panel(k: &Kit, s: &App) -> El {
