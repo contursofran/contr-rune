@@ -8,6 +8,7 @@ use alacritty_terminal::vte::ansi::{Color as AColor, CursorShape, NamedColor, Rg
 use rune::{Color, Span};
 use rune_kit::Kit;
 
+use crate::find::{self, Match};
 use crate::session::Events;
 use crate::theme;
 
@@ -24,6 +25,9 @@ pub struct Ink {
     pub selected: Color,
     /// Dark kit: picks the dark or the light ANSI palette.
     pub dark: bool,
+    /// The fill of a search match, and the stronger fill of the current one.
+    pub found: Color,
+    pub found_current: Color,
 }
 
 impl Ink {
@@ -35,7 +39,15 @@ impl Ink {
 
 impl Ink {
     pub fn from_kit(k: &Kit) -> Ink {
-        Ink { text: k.c.text_base, dim: k.c.text_muted, bg: k.c.bg_base, selected: k.c.pressed, dark: k.dark }
+        Ink {
+            text: k.c.text_base,
+            dim: k.c.text_muted,
+            bg: k.c.bg_base,
+            selected: k.c.pressed,
+            dark: k.dark,
+            found: k.alpha(k.c.text_accent, 0.3),
+            found_current: k.alpha(k.c.text_accent, 0.7),
+        }
     }
 }
 
@@ -105,8 +117,9 @@ fn resolve(c: AColor, colors: &Colors, fg: bool, ink: &Ink) -> Color {
     }
 }
 
-/// The visible rows, with the block cursor drawn as an inverted cell.
-pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink) -> Vec<Line> {
+/// The visible rows, with the block cursor drawn as an inverted cell and the search `found`
+/// matches filled (`current` more strongly).
+pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink, found: &[Match], current: Option<usize>) -> Vec<Line> {
     let content = term.renderable_content();
     let rows = term.screen_lines();
     let colors = content.colors;
@@ -141,6 +154,10 @@ pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink) -> Vec<Line> {
             has_bg = true;
         }
         if cell.flags.contains(Flags::DIM) { fg = fg.mix(ink.bg, ink.dim_mix()); }
+        if let Some(m) = find::at(found, cell.point) {
+            bg = if Some(m) == current { ink.found_current } else { ink.found };
+            has_bg = true;
+        }
         let is_cursor = show_cursor && cell.point == cursor;
         if is_cursor {
             if focused {

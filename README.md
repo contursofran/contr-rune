@@ -14,8 +14,12 @@ for contr.
 - **Tabs:** the selected project's terminals in a `TabStrip`, with a close button and a `+`.
 - **Terminal:** a real login shell in a PTY, parsed by `alacritty_terminal` and drawn as coloured text
   rows. Scrollback with the wheel or Shift+PageUp/PageDown. A tab closes when its shell exits.
-- **Title bar:** the diff summary of the project (`+added −removed`, files changed), split and search
-  buttons (placeholders, no action yet) and the files panel toggle.
+- **Title bar:** the diff summary of the project (`+added −removed`, files changed), a split button
+  (placeholder, no action yet), search and the files panel toggle.
+- **Find:** the Search button or ⌘F opens a floating bar at the top right of the terminal. Typing
+  highlights every match of the word (plain text, any case) in the scrollback and screen; the count
+  reads "3 of 12". Return / ⌘G go to the next match, Shift+Return / ⌘⇧G to the previous, wrapping; the
+  view scrolls to it. Esc closes the bar. Another tab closes it.
 - **Files panel:** the project's git tree (`.gitignore` respected) with a state per file, a "changed
   only" filter, and opening a file uses the default app (`open` on macOS, `xdg-open` on Linux).
 
@@ -37,6 +41,9 @@ at build time. Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` b
 | Ctrl+Shift+W | ⌘W | Close tab |
 | Ctrl+Shift+B | ⌘B | Show or hide the files panel |
 | Ctrl+Shift+, | ⌘, | Open settings (Esc closes) |
+| Ctrl+Shift+F | ⌘F | Find in the terminal (the Search button too); Esc closes the bar |
+| Enter / Ctrl+Shift+G | Return / ⌘G | Next match (in the find bar; F3 too) |
+| Shift+Enter / Ctrl+Alt+Shift+G | Shift+Return / ⌘⇧G | Previous match (Shift+F3 too) |
 | Ctrl+Tab | Ctrl+Tab | Next tab |
 | Ctrl+Shift+Tab | Ctrl+Shift+Tab | Previous tab |
 | Ctrl+PageDown / Ctrl+PageUp | same | Next / previous tab |
@@ -89,6 +96,6 @@ cargo run -- --script script.json --tree tree.json --scene three-tabs  # click, 
 ## Not built
 
 - Text selection and copy, and mouse reporting to programs inside the terminal.
-- Split and search (the buttons are there, with no action).
+- Split (the button is there, with no action).
 - Measured cell width: it assumes 0.6 em, which fits JetBrains Mono and DejaVu Sans Mono.
 - herdr (`hc`) agents: these are plain shells. Projects are not saved between launches.
