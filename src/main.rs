@@ -7,6 +7,7 @@
 //! folder and home). Shortcuts: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Tab /
 //! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS).
 
+mod diff;
 mod grid;
 mod keys;
 mod session;
@@ -16,15 +17,20 @@ mod theme;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
 use rune_kit::shell::{TabDragState, TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
-use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, State};
 use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, text};
 
+use diff::DiffSummary;
 use session::{Session, Size, now_ms};
 use theme::*;
+
+/// The diff summary is refreshed at most this often (a new project selection refreshes at once).
+const DIFF_EVERY: Duration = Duration::from_secs(3);
 
 /// Output within this long ago makes a terminal "working".
 const WORKING_MS: u64 = 1_500;
@@ -64,6 +70,19 @@ struct App {
     tab_drag: TabDragState,
     /// The one kit every view reads colours, type and radius from.
     kit: Kit,
+    /// Whether the files panel is shown (⌘B).
+    show_files: bool,
+    /// The selected project's working-tree summary; `None` when it is not a repo or has no changes.
+    diff: Option<DiffSummary>,
+    /// The project path `diff` belongs to.
+    diff_for: Option<PathBuf>,
+    /// A refresh is wanted (a terminal went idle, or the project changed).
+    diff_stale: bool,
+    /// A git run is in flight.
+    diff_inflight: bool,
+    diff_last: Option<Instant>,
+    diff_tx: Sender<(PathBuf, Option<DiffSummary>)>,
+    diff_rx: Receiver<(PathBuf, Option<DiffSummary>)>,
 }
 
 fn init() -> App {
@@ -88,6 +107,7 @@ fn init() -> App {
             last_tab: None,
         })
         .collect();
+    let (diff_tx, diff_rx) = channel();
     App {
         projects,
         tabs: Vec::new(),
@@ -102,6 +122,14 @@ fn init() -> App {
         error: None,
         tab_drag: TabDragState::new(),
         kit: Kit::neutral(true),
+        show_files: true,
+        diff: None,
+        diff_for: None,
+        diff_stale: false,
+        diff_inflight: false,
+        diff_last: None,
+        diff_tx,
+        diff_rx,
     }
 }
 
@@ -211,6 +239,35 @@ impl App {
         }
     }
 
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.projects.get(self.selected_project).map(|p| p.path.clone())
+    }
+
+    /// Compute the summary now, on this thread (scenes only: a headless run cannot wait for the thread).
+    fn refresh_diff_now(&mut self) {
+        self.diff_for = self.selected_path();
+        self.diff = self.diff_for.as_deref().and_then(diff::summarize).filter(|d| d.files > 0);
+        self.diff_stale = false;
+    }
+
+    /// Run git on a thread; `poll` picks the result up.
+    fn spawn_diff(&mut self) {
+        let Some(path) = self.selected_path() else { return };
+        self.diff_inflight = true;
+        self.diff_stale = false;
+        self.diff_last = Some(Instant::now());
+        let (tx, waker) = (self.diff_tx.clone(), self.waker.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send((path.clone(), diff::summarize(&path)));
+            if let Some(w) = &waker { w(); }
+        });
+    }
+
+    /// Show or hide the files panel; the terminal card takes the freed width.
+    fn toggle_files(&mut self) {
+        self.show_files = !self.show_files;
+    }
+
     fn paste(&mut self, text: &str) {
         let Some(t) = self.active_tab() else { return };
         let bracketed = t.session.term.lock().unwrap().mode().contains(TermMode::BRACKETED_PASTE);
@@ -261,9 +318,44 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
         // Look again when the newest output turns quiet, to drop the working dot.
         tx.wake_after(Duration::from_millis(500));
     }
+    // A terminal of the selected project going from working to idle may have changed files.
+    let finished = s.statuses.iter().any(|(id, was)| {
+        *was == Status::Working
+            && statuses.iter().any(|(i, st)| i == id && *st == Status::Idle)
+            && s.tabs.iter().any(|t| t.session.id == *id && t.project == s.selected_project)
+    });
     if statuses != s.statuses {
         s.statuses = statuses;
         changed = true;
+    }
+    changed | poll_diff(s, finished, tx)
+}
+
+/// Take finished git runs and start the next one: at once for a new project, else at most every 3 s.
+fn poll_diff(s: &mut App, finished: bool, tx: &mut Tx) -> bool {
+    let mut changed = false;
+    let path = s.selected_path();
+    while let Ok((from, sum)) = s.diff_rx.try_recv() {
+        s.diff_inflight = false;
+        if Some(&from) == path.as_ref() {
+            s.diff = sum.filter(|d| d.files > 0);
+            s.diff_for = Some(from);
+            changed = true;
+        }
+    }
+    let new_project = s.diff_for != path;
+    if new_project {
+        s.diff = None;
+        s.diff_for = path;
+        s.diff_stale = true;
+        changed = true;
+    }
+    s.diff_stale |= finished;
+    if s.diff_stale && !s.diff_inflight {
+        match s.diff_last.map(|t| DIFF_EVERY.saturating_sub(t.elapsed())) {
+            Some(wait) if !new_project && !wait.is_zero() => tx.wake_after(wait),
+            _ => s.spawn_diff(),
+        }
     }
     changed
 }
@@ -282,6 +374,10 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if is_shortcut(ev, 'w') {
         if let Some(id) = s.active { s.close_tab(id); }
+        return true;
+    }
+    if is_shortcut(ev, 'b') {
+        s.toggle_files();
         return true;
     }
     if is_shortcut(ev, 'v') {
@@ -314,7 +410,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = &s.kit;
     let mut layer = Vec::new();
     let bar = title_bar(k, s, cx, &mut layer);
-    shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), shell::files_panel(k), layer)
+    shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), s.show_files.then(|| shell::files_panel(k)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
 }
 
@@ -334,6 +430,22 @@ static PLUS: Icon = Icon {
     name: "contr-plus",
     view: 16.0,
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M3 8h10"/></g>"#,
+};
+
+static SPLIT: Icon = Icon {
+    name: "contr-split",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5"/><path d="M8 2.5v11"/></g>"#,
+};
+static SEARCH: Icon = Icon {
+    name: "contr-search",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3.5 3.5"/></g>"#,
+};
+static PANEL_RIGHT: Icon = Icon {
+    name: "contr-panel-right",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5"/><path d="M10 2.5v11"/></g>"#,
 };
 
 fn tab_id(id: u64) -> String { id.to_string() }
@@ -365,8 +477,39 @@ fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>) -> El {
         .on_close(|s: &mut App, id: &str, _tx| { if let Ok(id) = id.parse() { s.close_tab(id); } })
         .on_reorder(move |s: &mut App, r: TabReorder, _tx| s.reorder_tab(project, r.from, r.to))
         .build_layered(k, layer);
-    // The leading area stays free for the macOS traffic lights; the tabs start after it. K5 fills the right side.
-    shell::titlebar(k, shell::lights_gap(), strip, Vec::new())
+    // The leading area stays free for the macOS traffic lights; the tabs start after it.
+    shell::titlebar(k, shell::lights_gap(), strip, trailing(k, s))
+}
+
+/// The title bar's right side: diff summary, split, search, files toggle.
+fn trailing(k: &Kit, s: &App) -> Vec<El> {
+    let mut items = Vec::new();
+    if let Some(text) = s.diff.and_then(|d| d.text()) {
+        items.push(
+            Button::new(text)
+                .variant(ButtonVariant::Ghost)
+                .help("Show changed files")
+                .on_press(|s: &mut App| s.show_files = true)
+                .build(k)
+                .key("diff-summary"),
+        );
+    }
+    let icon = |i: &'static Icon, label: &str| IconButton::new(i).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Large).label(label.to_owned());
+    // Split and search have no action yet; they keep their place and tooltip.
+    items.push(icon(&SPLIT, "Split terminal").help("Split terminal").build(k).key("split"));
+    items.push(icon(&SEARCH, "Search").help("Search").build(k).key("search"));
+    let label = if s.show_files { "Hide files" } else { "Show files" };
+    let chord = if cfg!(target_os = "macos") { "cmd+b" } else { "ctrl+shift+b" };
+    items.push(
+        icon(&PANEL_RIGHT, label)
+            .help(label)
+            .shortcut(chord)
+            .state(if s.show_files { State::Pressed } else { State::Rest })
+            .on_press(|s: &mut App| s.toggle_files())
+            .build(k)
+            .key("files-toggle"),
+    );
+    items
 }
 
 fn terminal_panel(k: &Kit, s: &App) -> El {
@@ -438,11 +581,13 @@ fn main() {
                 s.open_tab(0);
                 s.open_tab(0);
                 s.open_tab(0);
+                s.refresh_diff_now();
             }),
             // One shell that prints the ANSI colours, to check the palette on the panel.
             ("ansi", |s| {
                 s.open_tab(0);
                 if let Some(t) = s.active_tab() { t.session.write(ANSI_DEMO.as_bytes()); }
+                s.refresh_diff_now();
             }),
         ],
         ..AppSpec::new("contr", (1280.0, 800.0), init, view)
