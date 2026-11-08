@@ -94,8 +94,10 @@ pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+    // Nerd Font icons (prompt glyphs), so they draw on any machine.
+    include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf"),
 ];
-pub const FAMILIES: (&str, &str) = ("Inter", "JetBrains Mono, JetBrainsMono Nerd Font, ui-monospace");
+pub const FAMILIES: (&str, &str) = ("Inter", "JetBrains Mono, Symbols Nerd Font Mono, JetBrainsMono Nerd Font, ui-monospace");
 
 #[cfg(test)]
 mod tests {
