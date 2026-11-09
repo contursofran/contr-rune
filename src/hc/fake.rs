@@ -51,7 +51,7 @@ use serde_json::{Value, json};
 use super::framed::{Decoder, Kind, SendWindow, encode, parse_credit, parse_resize};
 
 /// Methods that change the core: logged.
-const MUTATING: [&str; 8] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach", "terminal.interrupt", "terminal.read", "terminal.keys"];
+const MUTATING: [&str; 9] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach", "terminal.interrupt", "terminal.read", "terminal.keys", "terminal.label"];
 
 /// How often the fake sends a heartbeat (the core sends one every 15 s).
 const HEARTBEAT: Duration = Duration::from_secs(15);
@@ -354,6 +354,25 @@ impl Fixture {
         Ok(json!({"turn": terminal["turn"].as_u64().unwrap_or(0) + 1}))
     }
 
+    /// `terminal.label`: the labels in `params` are set on the terminal; an empty value removes
+    /// its label. The terminal is returned.
+    fn label(&self, params: &Value) -> Result<Value, Fail> {
+        let address = params["terminal"].as_str().unwrap_or_default();
+        let mut core = self.core.lock().unwrap();
+        let t = core.terminals.iter_mut().find(|t| t["address"] == address).ok_or(("not_found", format!("no terminal \"{address}\"")))?;
+        if !t["labels"].is_object() {
+            t["labels"] = json!({});
+        }
+        for (k, v) in params["labels"].as_object().into_iter().flatten() {
+            if v.as_str() == Some("") {
+                t["labels"].as_object_mut().unwrap().remove(k);
+            } else {
+                t["labels"][k] = v.clone();
+            }
+        }
+        Ok(t.clone())
+    }
+
     /// `terminal.kill`: the terminal finishes; every viewer gets CLOSE `killed`.
     fn kill(&self, address: &str) -> Result<Value, Fail> {
         self.finish(address, "killed", None)
@@ -639,6 +658,7 @@ impl Ctx {
             "terminal.send" => fx.send(Self::address(params)),
             // Same result shape as send: `{turn}` (K1: the keys are logged, the screen does not change).
             "terminal.keys" => fx.send(Self::address(params)),
+            "terminal.label" => fx.label(params),
             "terminal.interrupt" => fx.get(Self::address(params)).map(|_| json!({"outcome": "stopped", "key": "esc"})),
             "terminal.read" => {
                 let address = Self::address(params);
@@ -864,6 +884,15 @@ mod tests {
         assert_eq!(c.call("terminal.send", json!({"terminal": "t1", "text": "hi\n"}), T).unwrap()["turn"], 3);
         assert_eq!(c.call("terminal.send", json!({"terminal": "t2", "text": "hi\n"}), T).unwrap_err().kind(), Some("finished"));
         assert_eq!(c.call("terminal.send", json!({"terminal": "t9", "text": "hi\n"}), T).unwrap_err().kind(), Some("not_found"));
+    }
+
+    #[test]
+    fn label_sets_and_removes_labels() {
+        let c = connect(json!({"terminals": [{"address": "t1", "state": "live", "labels": {"a": "1"}}]}), None);
+        let t = c.call("terminal.label", json!({"terminal": "t1", "labels": {"contr.model": "opus", "a": ""}}), T).unwrap();
+        assert_eq!(t["labels"], json!({"contr.model": "opus"}));
+        assert_eq!(c.call("terminal.get", json!({"terminal": "t1"}), T).unwrap()["labels"], json!({"contr.model": "opus"}));
+        assert_eq!(c.call("terminal.label", json!({"terminal": "t9", "labels": {}}), T).unwrap_err().kind(), Some("not_found"));
     }
 
     #[test]

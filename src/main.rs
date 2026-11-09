@@ -36,6 +36,7 @@ mod split;
 mod terminal_view;
 mod theme;
 mod titlebar;
+mod update;
 mod usage;
 
 use std::collections::HashMap;
@@ -166,6 +167,8 @@ struct App {
     plans: usage::Plans,
     /// The terminal text selection (T1).
     select: select::Select,
+    /// The update check, pill and toast (R3a).
+    update: update::Updater,
     /// The orchestrator outline (H10).
     outline: outline::State,
 }
@@ -258,6 +261,7 @@ fn init() -> App {
         card: notch::Card::default(),
         plans: usage::Plans::new(),
         select: select::Select::default(),
+        update: update::Updater::new(),
         outline: outline::State::default(),
     };
     app.reload_owner(true);
@@ -828,6 +832,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
         tx.wake_after(OWNER_EVERY);
     }
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
+    changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
     s.sync_outline();
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
@@ -987,12 +992,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         dialog::build(k, s, &mut layer);
     }
     notch::card(k, s, &mut layer);
+    update::overlays(k, s, &mut layer);
     outline::card(k, s, &mut layer);
     shell::window(k, bar, sidebar::view(k, s, &mut layer), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| {
             s.focused = focused;
             // Coming back: the file may have changed meanwhile.
-            if focused { s.reload_owner(false); }
+            if focused { s.reload_owner(false); s.update.on_focus(); }
         })
 }
 
@@ -1094,6 +1100,14 @@ fn main() {
                 s.card.open = true;
                 // The tab of the first question, after the blocked agent of the fake core's fixture.
                 s.card.tab = 1;
+            }),
+            // Three shells and the update check run at once (`CONTR_UPDATE_URL`): the pill and the toast show for a newer release.
+            ("update", |s| {
+                s.open_tab(0);
+                s.open_tab(0);
+                s.open_tab(0);
+                s.refresh_diff_now();
+                s.update.check_now();
             }),
             // One shell with known text, the find bar closed (the tests type the query).
             ("find-text", |s| {

@@ -69,6 +69,17 @@ pub(crate) fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>)
 /// The title bar's right side: diff summary, split, search, files toggle.
 fn trailing(k: &Kit, s: &App) -> Vec<El> {
     let mut items = Vec::new();
+    if s.update.ready.is_some() {
+        items.push(
+            Button::new("Restart to update")
+                .variant(ButtonVariant::Neutral)
+                .control_size(ControlSize::Small)
+                .help("An update is ready")
+                .on_press(|s: &mut App| s.update.panel = !s.update.panel)
+                .build(k)
+                .key("update-pill"),
+        );
+    }
     if let Some(text) = s.diff.and_then(|d| d.text()) {
         items.push(
             Button::new(text)

@@ -1,0 +1,237 @@
+//! `contr-rune hook stop` (PARITY-PLAN D5; Go: cmd/contr/hook.go). The kit's Stop hook: Claude Code
+//! gives the hook input as one JSON value on stdin. In a worker (`CONTR_COORDINATOR` set) a turn
+//! that sent no report gets one sent to the coordinator; in any hc session the terminal gets the
+//! `contr.model` and `contr.effort` labels (D189). It never exits 2: for a Stop hook that blocks
+//! the turn.
+
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use serde_json::{Value, json};
+
+use super::turn;
+use crate::agents;
+use crate::hc::conn::Conn;
+
+const USAGE: &str = "\
+Usage:
+  contr-rune hook stop            the kit's Stop hook
+
+Claude Code runs it and gives it the hook input on stdin.
+
+stop, in a worker (CONTR_COORDINATOR is set): a turn that sent no report with hc send
+gets one, \"ended its turn without a report. Last words: ...\", sent to the coordinator.
+In any hc session it also labels the terminal with the model and effort (contr.model,
+contr.effort) for the sidebar row. It never stops the turn.
+";
+
+/// The most characters of the worker's last words in a report.
+const SAID_MAX: usize = 300;
+
+/// How long to wait for the hook input, and for each call to the core.
+const INPUT_WAIT: Duration = Duration::from_secs(5);
+const CALL: Duration = Duration::from_secs(10);
+
+/// The environment a hook reads.
+pub struct Env {
+    /// `CONTR_COORDINATOR`: the address that started this worker; empty outside a worker.
+    pub coordinator: String,
+    /// `HC_TERMINAL_ID`: this terminal; empty outside hc.
+    pub terminal_id: String,
+    /// `CLAUDE_EFFORT`.
+    pub effort: String,
+}
+
+impl Env {
+    pub fn real() -> Env {
+        let var = |k: &str| std::env::var(k).unwrap_or_default();
+        Env { coordinator: var("CONTR_COORDINATOR"), terminal_id: var("HC_TERMINAL_ID"), effort: var("CLAUDE_EFFORT") }
+    }
+}
+
+/// `contr-rune hook <kind>`. Exit 0 when done or nothing to do, 1 on an error (usage included);
+/// never 2.
+pub fn run(args: &[String], env: &Env, stdin: impl Read + Send + 'static, err: &mut impl Write) -> i32 {
+    match args {
+        [kind] if kind == "stop" => stop(env, stdin, err),
+        [kind] if ["session-start", "post-tool", "prompt"].contains(&kind.as_str()) => {
+            let _ = writeln!(err, "contr-rune hook {kind}: not built yet");
+            1
+        }
+        _ => {
+            let _ = err.write_all(USAGE.as_bytes());
+            1
+        }
+    }
+}
+
+fn stop(env: &Env, stdin: impl Read + Send + 'static, err: &mut impl Write) -> i32 {
+    // Outside hc there are no workers and no sessions to label.
+    if env.coordinator.is_empty() && env.terminal_id.is_empty() {
+        return 0;
+    }
+    let input = match read_input(stdin) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(err, "contr-rune hook: bad hook input: {e}");
+            return 1;
+        }
+    };
+    let transcript = input["transcript_path"].as_str().unwrap_or_default();
+    // The report is the work; the labels are best effort and never fail the hook.
+    let report = if env.coordinator.is_empty() { Ok(None) } else { missed_turn(&input, transcript) };
+    let labels = labels(&input, transcript, env);
+    if report.as_ref().is_ok_and(Option::is_none) && labels.is_empty() {
+        return 0;
+    }
+    let (conn, _keep) = match super::agents::connect() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "contr-rune hook: {e}");
+            return 1;
+        }
+    };
+    if !labels.is_empty() {
+        label(&conn, &env.terminal_id, &labels);
+    }
+    match report {
+        Ok(Some(text)) => match agents::send(&conn, &env.terminal_id, &env.coordinator, &text) {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(err, "contr-rune hook: report to {}: {e}", env.coordinator);
+                1
+            }
+        },
+        Ok(None) => 0,
+        Err(e) => {
+            let _ = writeln!(err, "contr-rune hook: {e}");
+            1
+        }
+    }
+}
+
+/// One JSON value from `stdin`, within `INPUT_WAIT`. It reads one value, not to the end: a
+/// caller that keeps the pipe open must not hang the hook (Swift P21).
+fn read_input(stdin: impl Read + Send + 'static) -> Result<Value, String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let value = serde_json::Deserializer::from_reader(stdin).into_iter::<Value>().next();
+        let _ = tx.send(value);
+    });
+    match rx.recv_timeout(INPUT_WAIT) {
+        Ok(Some(Ok(v))) => Ok(v),
+        Ok(Some(Err(e))) => Err(e.to_string()),
+        Ok(None) => Err("empty input".into()),
+        Err(_) => Err("no input within 5 s".into()),
+    }
+}
+
+/// The text to send the coordinator when the last turn sent no report, else `None`.
+fn missed_turn(input: &Value, transcript: &str) -> Result<Option<String>, String> {
+    let bytes = std::fs::read(transcript).map_err(|e| format!("transcript {transcript:?}: {e}"))?;
+    let turn = turn::last_turn(&bytes);
+    if turn.reported {
+        return Ok(None);
+    }
+    let said = input["last_assistant_message"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(&turn.said);
+    Ok(Some(missed_report(said, input["cwd"].as_str().unwrap_or_default())))
+}
+
+/// The report for a turn that sent none. `said` is cut to one line of `SAID_MAX` characters;
+/// `RESULT.md` in the worker's folder is pointed to.
+fn missed_report(said: &str, cwd: &str) -> String {
+    let mut said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    if said.chars().count() > SAID_MAX {
+        said = said.chars().take(SAID_MAX).collect::<String>() + "…";
+    }
+    if said.is_empty() {
+        said = "(none)".into();
+    }
+    let mut text = format!("ended its turn without a report. Last words: {said}");
+    if !cwd.is_empty() && Path::new(cwd).join("RESULT.md").exists() {
+        text.push_str(&format!("; RESULT.md in {cwd}"));
+    }
+    text
+}
+
+/// The labels to set: the short model of the transcript and the effort of the hook input, else
+/// `CLAUDE_EFFORT`. A value that is not known is left out, so the label keeps its last value.
+fn labels(input: &Value, transcript: &str, env: &Env) -> Vec<(&'static str, String)> {
+    let mut labels = Vec::new();
+    if env.terminal_id.is_empty() {
+        return labels;
+    }
+    if !transcript.is_empty()
+        && let Some(model) = turn::last_model(Path::new(transcript)).ok().flatten()
+    {
+        labels.push(("contr.model", turn::short_model(&model)));
+    }
+    let effort = input["effort"]["level"].as_str().filter(|l| !l.is_empty()).unwrap_or(&env.effort);
+    if !effort.is_empty() {
+        labels.push(("contr.effort", effort.to_owned()));
+    }
+    labels
+}
+
+/// `terminal.label` on this terminal. Best effort.
+fn label(conn: &Conn, terminal: &str, labels: &[(&str, String)]) {
+    let map: serde_json::Map<String, Value> = labels.iter().map(|(k, v)| ((*k).to_owned(), json!(v))).collect();
+    let _ = conn.call("terminal.label", json!({"terminal": terminal, "labels": map}), CALL);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missed_report_table() {
+        let long = "x".repeat(400);
+        let cut = format!("ended its turn without a report. Last words: {}…", "x".repeat(300));
+        let cases = [
+            ("done  the\n thing", "", "ended its turn without a report. Last words: done the thing"),
+            ("", "", "ended its turn without a report. Last words: (none)"),
+            (" \n ", "/nonexistent-dir", "ended its turn without a report. Last words: (none)"),
+            (long.as_str(), "", cut.as_str()),
+        ];
+        for (said, cwd, want) in cases {
+            assert_eq!(missed_report(said, cwd), want);
+        }
+    }
+
+    #[test]
+    fn missed_report_points_to_result_md() {
+        let dir = std::env::temp_dir().join(format!("contr-rune-hook-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("RESULT.md"), "x").unwrap();
+        let cwd = dir.to_str().unwrap();
+        assert_eq!(missed_report("hi", cwd), format!("ended its turn without a report. Last words: hi; RESULT.md in {cwd}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn labels_take_the_effort_of_the_input_before_the_environment() {
+        let env = |effort: &str, id: &str| Env { coordinator: String::new(), terminal_id: id.into(), effort: effort.into() };
+        let input = json!({"effort": {"level": "high"}});
+        assert_eq!(labels(&input, "", &env("low", "t1")), vec![("contr.effort", "high".to_owned())]);
+        assert_eq!(labels(&json!({}), "", &env("low", "t1")), vec![("contr.effort", "low".to_owned())]);
+        assert!(labels(&json!({}), "", &env("", "t1")).is_empty());
+        assert!(labels(&input, "", &env("low", "")).is_empty());
+    }
+
+    #[test]
+    fn input_is_one_json_value_and_bad_input_exits_1_never_2() {
+        assert_eq!(read_input(&b"{\"a\":1} trailing"[..]).unwrap(), json!({"a": 1}));
+        assert!(read_input(&b""[..]).is_err());
+        let env = Env { coordinator: "t3".into(), terminal_id: "t1".into(), effort: String::new() };
+        let mut err = Vec::new();
+        assert_eq!(run(&["stop".into()], &env, &b"nope"[..], &mut err), 1);
+        assert!(String::from_utf8(err).unwrap().contains("bad hook input"));
+        let outside = Env { coordinator: String::new(), terminal_id: String::new(), effort: String::new() };
+        assert_eq!(run(&["stop".into()], &outside, &b""[..], &mut Vec::new()), 0);
+        for args in [vec![], vec!["bogus".to_owned()], vec!["prompt".to_owned()]] {
+            assert_eq!(run(&args, &env, &b""[..], &mut Vec::new()), 1);
+        }
+    }
+}
