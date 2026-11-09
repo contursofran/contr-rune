@@ -462,7 +462,7 @@ pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
             list = list.child(terminal_row(k, s, t));
         }
     }
-    let this_mac = SidebarRow::new("this Mac").icon(&LAPTOP).detail("local").height(theme::ROW_HEIGHT).title_style(theme::BODY).selected(true).build(k).key("server-this-mac");
+    let this_mac = SidebarRow::new("this Mac").icon(&LAPTOP).detail(crate::host::meta(s.host.reading)).height(theme::ROW_HEIGHT).title_style(theme::BODY).selected(true).build(k).key("server-this-mac");
     let gear = icon_button(&GEAR, "Settings").on_press(|s: &mut App| s.settings_open = true).build(k).key("settings");
     if let Some(e) = &s.error {
         list = list.footer(text(e.clone()).font(k.ty.text_xsmall).color(k.c.danger.icon).key("error").px(10.0).pb(6.0));
