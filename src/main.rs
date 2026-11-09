@@ -361,6 +361,8 @@ impl App {
         let size = self.pane_size[0];
         let mut opened: Vec<(u64, usize)> = Vec::new();
         for item in items {
+            // A Claude session may already have its tab (the agents come first, D190).
+            if self.tabs.iter().any(|t| t.session.address().as_deref() == Some(item.address.as_str())) { continue; }
             let project = match item.target {
                 restore::Target::Project(i) => i,
                 restore::Target::Folder(path) => match self.projects.iter().position(|p| same(&p.path, &path)) {
@@ -479,7 +481,7 @@ impl App {
     /// agent's project. A Claude session the owner closed comes back.
     fn select_agent(&mut self, address: String) {
         self.hidden.remove(&address);
-        let id = match self.tabs.iter().find(|t| t.agent.as_deref() == Some(address.as_str())).map(|t| t.session.id()) {
+        let id = match self.tabs.iter().find(|t| self.tab_agent_address(t) == Some(address.as_str())).map(|t| t.session.id()) {
             Some(id) => id,
             None => match self.attach_agent(address) {
                 Some(id) => id,
@@ -506,23 +508,31 @@ impl App {
 
     /// What a tab shows in the set (T4).
     fn tab_kind(&self, t: &Tab) -> tabs::Kind<'_> {
-        match t.agent.as_deref().and_then(|addr| self.agents.iter().find(|a| a.address == addr)) {
+        match self.tab_agent_of(t) {
             Some(a) if a.is_orchestrator() => tabs::Kind::Claude(self.sidebar_place(a)),
             Some(a) => tabs::Kind::Worker(&a.address),
-            None if self.tab_runs_claude(t.session.id()) => tabs::Kind::Claude(usize::MAX),
             None => tabs::Kind::Plain,
         }
+    }
+
+    /// The address of the agent a tab shows: the attached agent's, or that of a plain tab's own
+    /// terminal while it is a Claude session (D190).
+    fn tab_agent_address<'a>(&'a self, t: &'a Tab) -> Option<&'a str> {
+        let attached = t.agent.as_deref();
+        attached.or_else(|| {
+            let address = t.session.address()?;
+            self.agents.iter().find(|a| a.address == address && a.state != model::AgentState::Ended).map(|a| a.address.as_str())
+        })
+    }
+
+    fn tab_agent_of(&self, t: &Tab) -> Option<&hc::model::Agent> {
+        let address = self.tab_agent_address(t)?;
+        self.agents.iter().find(|a| a.address == address)
     }
 
     /// The place of an agent among its project's sidebar rows.
     fn sidebar_place(&self, a: &hc::model::Agent) -> usize {
         a.project.and_then(|p| model::lines(&self.agents, p).iter().position(|l| l.agent.address == a.address)).unwrap_or(usize::MAX)
-    }
-
-    /// A plain tab whose terminal runs Claude Code (D190).
-    fn tab_runs_claude(&self, id: u64) -> bool {
-        let Some(address) = self.tabs.iter().find(|t| t.session.id() == id).filter(|t| t.agent.is_none()).and_then(|t| t.session.address()) else { return false };
-        self.hc_terminals.iter().any(|t| t.address == address && t.state != "finished" && model::runs_claude(t))
     }
 
     /// Bring the selected project's tabs to the shared set (T4): attach every Claude session that is
@@ -534,7 +544,7 @@ impl App {
             .iter()
             .filter(|l| l.agent.is_orchestrator() && !self.hidden.contains(&l.agent.address))
             .map(|l| l.agent.address.clone())
-            .filter(|addr| !self.tabs.iter().any(|t| t.agent.as_deref() == Some(addr.as_str())))
+            .filter(|addr| !self.tabs.iter().any(|t| self.tab_agent_address(t) == Some(addr.as_str())))
             .collect();
         for address in wanted {
             self.attach_agent(address);
@@ -566,7 +576,7 @@ impl App {
         if let Some(kept) = kept { self.projects[project].last_worker = kept; }
         // Selecting a plain tab clears the agent selection; an agent's tab sets it.
         let before = self.selected_agent.take();
-        self.selected_agent = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| t.agent.clone());
+        self.selected_agent = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| self.tab_agent_address(t).map(str::to_owned));
         let agent_changed = before != self.selected_agent;
         // A split belongs to one project: a tab of another project takes the whole panel.
         if self.split.as_ref().is_some_and(|sp| sp.project != project) { self.split = None; }
@@ -689,8 +699,7 @@ impl App {
     /// The program in an hc tab reports `blocked`: it waits for the owner.
     /// The agent a tab shows, when it is an agent's tab and the agent is still known.
     fn tab_agent(&self, id: u64) -> Option<&hc::model::Agent> {
-        let address = self.tabs.iter().find(|t| t.session.id() == id)?.agent.as_deref()?;
-        self.agents.iter().find(|a| a.address == address)
+        self.tab_agent_of(self.tabs.iter().find(|t| t.session.id() == id)?)
     }
 
     fn tab_needs_you(&self, id: u64) -> bool {
