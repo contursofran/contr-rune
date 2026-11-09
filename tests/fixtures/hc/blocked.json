@@ -1,0 +1,27 @@
+{
+  "hello": {"generation": 1, "version": "0.1.19", "core": {"id": "913cbec723543c5e29a10355871310fc", "name": "fake-core"}},
+  "terminals": [
+    {"address": "t3", "name": "orch", "parent": null, "cwd": "/tmp/contr", "argv": ["claude", "--model", "opus"],
+     "labels": {"contr": "agent", "role": "orchestrator", "project": "contr", "contr.model": "opus"},
+     "state": "live", "turn": 7, "title": "Plan H6", "exit_code": null, "reason": null, "created_ms": 1000, "status_ms": 9000, "cols": 120, "rows": 40,
+     "foreground": {"pid": 200, "name": "claude", "argv": [], "cwd": "/tmp/contr"},
+     "status": {"state": "idle", "kind": null, "msg": "", "title": "", "app": "claude-code", "progress": null}},
+    {"address": "t18", "name": "b-242", "parent": "t3", "cwd": "/tmp/contr", "argv": ["claude", "--model", "sonnet"],
+     "labels": {"contr": "agent", "role": "builder", "project": "contr", "issue": "242"},
+     "state": "live", "turn": 2, "title": "Build H2", "exit_code": null, "reason": null, "created_ms": 3000, "status_ms": 9800, "cols": 120, "rows": 40,
+     "foreground": {"pid": 202, "name": "claude", "argv": [], "cwd": "/tmp/contr"},
+     "status": {"state": "idle", "kind": null, "msg": "", "title": "", "app": "claude-code", "progress": null}},
+    {"address": "t19", "name": "b-243", "parent": "t3", "cwd": "/tmp/contr", "argv": ["claude", "--model", "sonnet"],
+     "labels": {"contr": "agent", "role": "builder", "project": "contr", "issue": "243"},
+     "state": "live", "turn": 1, "title": "Build H3", "exit_code": null, "reason": null, "created_ms": 4000, "status_ms": 9900, "cols": 120, "rows": 40,
+     "foreground": {"pid": 203, "name": "claude", "argv": [], "cwd": "/tmp/contr"},
+     "status": {"state": "idle", "kind": null, "msg": "", "title": "", "app": "claude-code", "progress": null}}
+  ],
+  "events": [
+    {"after_ms": 100, "method": "event", "params": {"seq": 11, "type": "status", "terminal": "t18",
+      "data": {"status": {"state": "working", "kind": null, "msg": "", "title": "", "app": "claude-code", "progress": null}, "records": {}, "reported": true}}},
+    {"after_ms": 200, "method": "event", "params": {"seq": 12, "type": "status", "terminal": "t19",
+      "data": {"status": {"state": "blocked", "kind": "permission", "msg": "Run cargo test?", "title": "", "app": "claude-code", "progress": null}, "records": {}, "reported": true}}}
+  ],
+  "errors": {}
+}

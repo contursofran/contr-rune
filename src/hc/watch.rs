@@ -3,9 +3,9 @@
 //! the UI over an mpsc channel and wakes the window. Reconnect: 0.5 s doubled to 5 s.
 //!
 //! H1 keeps the state; H4 also forwards the events that matter to tabs (`restarted`, `finished`,
-//! `removed`). H5 keeps the terminal list (the snapshot of `events.subscribe`, then `model::apply`
-//! per event) with the time of each terminal's last event, and sends it after every change; the
-//! rest of the event kinds are applied in H6.
+//! `removed`). H5 keeps the terminal list and H6 keeps it live: the snapshot of `events.subscribe`,
+//! then every event (`model::Live`: `seq` order, `missed` snapshots) with the time of each
+//! terminal's last activity, sent after every change.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -17,7 +17,7 @@ use serde_json::json;
 use super::conn::{Conn, Note};
 use super::dial::{Dialer, Keep};
 use super::model;
-use super::wire::{Event, HelloResult, ServerStatus, Snapshot, Terminal};
+use super::wire::{Event, HelloResult, Missed, ServerStatus, Snapshot, Terminal};
 
 const CALL: Duration = Duration::from_secs(10);
 /// The core sends a heartbeat every 15 s; three missed ones mean the line is dead.
@@ -208,7 +208,7 @@ fn hold(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool, send: &dyn Fn(HcUpdate) 
     if !publish(HcStatus::Connected { version }) {
         return (true, String::new());
     }
-    forward_until_loss(&note_rx, send, snapshot.terminals);
+    forward_until_loss(&note_rx, send, snapshot.terminals, snapshot.seq);
     drop(events);
     (true, "connection lost".to_owned())
 }
@@ -221,27 +221,58 @@ fn subscribe(d: &Dialer, notes: Sender<Note>) -> Result<(Opened, Snapshot), Stri
     Ok((o, snap))
 }
 
+/// What a `missed` snapshot says happened to terminals we had: absent now is `Removed`, finished
+/// now (and not before) is `Finished`.
+fn gone_in(before: &[Terminal], after: &[Terminal]) -> Vec<(String, TermEvent)> {
+    let mut out = Vec::new();
+    for b in before {
+        match after.iter().find(|a| a.address == b.address) {
+            None => out.push((b.address.clone(), TermEvent::Removed)),
+            Some(a) if a.state == "finished" && b.state != "finished" => out.push((b.address.clone(), TermEvent::Finished)),
+            Some(_) => {}
+        }
+    }
+    out
+}
+
 /// Keep the terminal list current and send it (and the events tabs care about) until the events
-/// line ends or goes silent.
-fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool, mut terminals: Vec<Terminal>) {
-    let mut stamps: HashMap<String, u64> = HashMap::new();
-    if !send(HcUpdate::Terminals { terminals: terminals.clone(), stamps: stamps.clone() }) {
+/// line ends or goes silent. `seq` is the snapshot's: events at or below it are history.
+fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool, terminals: Vec<Terminal>, seq: u64) {
+    let mut live = model::Live::new(terminals, seq);
+    if !send(HcUpdate::Terminals { terminals: live.terminals.clone(), stamps: live.stamps.clone() }) {
         return;
     }
     while let Ok(note) = rx.recv_timeout(SILENCE) {
-        if let Some(u) = to_update(&note)
-            && !send(u)
-        {
-            return;
-        }
-        let Some(ev) = (note.method == "event").then(|| serde_json::from_value::<Event>(note.params.clone()).ok()).flatten() else { continue };
-        let Some(addr) = ev.terminal.clone() else { continue };
-        let changed = model::apply(&mut terminals, &ev);
-        stamps.insert(addr.clone(), crate::session::now_ms());
-        if !terminals.iter().any(|t| t.address == addr) {
-            stamps.remove(&addr);
-        }
-        if changed && !send(HcUpdate::Terminals { terminals: terminals.clone(), stamps: stamps.clone() }) {
+        let now = crate::session::now_ms();
+        let changed = match note.method.as_str() {
+            "event" => {
+                if let Some(u) = to_update(&note)
+                    && !send(u)
+                {
+                    return;
+                }
+                match serde_json::from_value::<Event>(note.params.clone()) {
+                    Ok(ev) => live.event(&ev, now),
+                    Err(_) => false,
+                }
+            }
+            "missed" => match serde_json::from_value::<Missed>(note.params.clone()) {
+                Ok(m) => {
+                    // The events that went missing may have ended tabs: tell them as the events would.
+                    let before = live.terminals.clone();
+                    let changed = live.missed(m.seq, m.terminals, now);
+                    for (terminal, kind) in gone_in(&before, &live.terminals) {
+                        if !send(HcUpdate::Event { terminal, kind }) {
+                            return;
+                        }
+                    }
+                    changed
+                }
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if changed && !send(HcUpdate::Terminals { terminals: live.terminals.clone(), stamps: live.stamps.clone() }) {
             return;
         }
     }
@@ -266,6 +297,15 @@ mod tests {
     use serde_json::Value;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_missed_snapshot_ends_the_tabs_it_no_longer_lists() {
+        let t = |a: &str, state: &str| Terminal { address: a.into(), state: state.into(), ..Terminal::default() };
+        let before = [t("t1", "live"), t("t2", "live"), t("t3", "live"), t("t4", "finished")];
+        let after = [t("t1", "live"), t("t3", "finished"), t("t4", "finished"), t("t5", "live")];
+        assert_eq!(gone_in(&before, &after), vec![("t2".to_owned(), TermEvent::Removed), ("t3".to_owned(), TermEvent::Finished)]);
+        assert!(gone_in(&after, &after).is_empty());
+    }
 
     fn fake(fx: Value) -> Dialer {
         Dialer::Fake(Arc::new(Fixture::from_value(fx)))

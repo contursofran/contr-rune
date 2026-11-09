@@ -144,6 +144,15 @@ pub struct Event {
     pub data: Value,
 }
 
+/// A `missed` notification's params: a fresh snapshot for a subscriber that fell behind.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct Missed {
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub terminals: Vec<Terminal>,
+}
+
 /// An error object: `{code, message, data{kind, hint}}`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct RpcError {

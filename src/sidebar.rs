@@ -2,16 +2,18 @@
 //! folder), each project with its terminals under it, then "Servers" and the settings gear.
 //!
 //! Under a project come its agents (H5): each orchestrator, then its workers one level deeper (the
-//! order and nesting come from `hc::model::lines`), then the project's terminal tabs.
+//! order and nesting come from `hc::model::lines`), then the project's terminal tabs. H6 makes
+//! their state live: the glyph per state, and the message of a needs-you row as its help.
 //!
 //! Element keys: `add-project`, `project-<i>`, `add-<i>` (the project's hover `+`),
-//! `agent/<address>` (with `glyph`, `subtitle` = the meta line and `detail` = the age inside),
+//! `agent/<address>` (with `glyph` = the state mark, its label the state, `subtitle` = the meta line
+//! and `detail` = the age inside),
 //! `term-<id>`, `server-this-mac`, `settings`.
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use rune::{El, FileDialogOptions, Icon, el, icon, row, spacer, text};
+use rune::{Color, Cycle, El, FileDialogOptions, Icon, LoopSpec, el, icon, row, spacer, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
 
@@ -157,25 +159,59 @@ fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
         .key(format!("project-{i}"))
 }
 
-/// The row's lead: the Claude mark for an orchestrator, else a braille glyph (busy, or at rest).
-/// Red only for an agent that needs you.
+/// The braille frames of a working glyph, as `main.html`'s `br` keyframes.
+const BRAILLE: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// One frame of the cycle: on for its tenth of the loop, off for the rest.
+const FRAME_STOPS: &[(f32, f32)] = &[(0.0, 1.0), (0.099, 1.0), (0.1, 0.0), (1.0, 0.0)];
+const BRAILLE_PERIOD: f32 = 0.9;
+const GLYPH_W: f32 = 16.0;
+const GLYPH_H: f32 = 18.0;
+
+/// The kit's `Spinner` is a dot radar and `RowStatus` has no braille or pulse, so the design's
+/// glyphs are drawn here with Rune's loop engine (renderer-owned: they run only on screen, share
+/// one clock and hold still under reduced motion). The braille cycle is ten glyphs stacked, each
+/// lit for a tenth of the 0.9 s loop; reduced motion holds the first.
+fn braille(color: Color, label: &str) -> El {
+    let mut b = el().key("glyph").role("img").label(label.to_owned()).size(GLYPH_W, GLYPH_H);
+    for (i, g) in BRAILLE.iter().enumerate() {
+        let cycle = Cycle { period: BRAILLE_PERIOD, phase: i as f32 / 10.0, stops: FRAME_STOPS, still: if i == 0 { 1.0 } else { 0.0 }, fps: 24.0 };
+        b = b.child(row().key(format!("f{i}")).absolute(0.0, 0.0).size(GLYPH_W, GLYPH_H).center().child(text(*g).font(theme::GLYPH).color(color)).cycle(cycle));
+    }
+    b
+}
+
+/// The row's lead. A worker: braille cycling while working, red while it needs you, a pulsing
+/// `⠿` while it waits, a faint `⠶` at rest. An orchestrator: the Claude mark, turning while it
+/// works or waits, dim at rest. Red only for an agent that needs you. The element is keyed `glyph`
+/// and says its state in its label (`needs you`, `working`, `waiting`, `idle`).
 fn agent_glyph(k: &Kit, line: &Line) -> El {
     let a = line.agent;
-    if a.is_orchestrator() {
-        return icon(&CLAUDE, 16.0).key("glyph").color(theme::claude_color());
-    }
-    let (glyph, color) = match a.state {
-        AgentState::NeedsYou { .. } => ("⠋", k.c.danger.icon),
-        AgentState::Working => ("⠋", k.c.text_base),
-        _ => ("⠶", k.c.text_faint),
+    let word = match a.state {
+        AgentState::NeedsYou { .. } => "needs you",
+        AgentState::Working => "working",
+        AgentState::Waiting => "waiting",
+        AgentState::Idle | AgentState::Ended => "idle",
     };
-    text(glyph).key("glyph").font(theme::GLYPH).color(color)
+    if a.is_orchestrator() {
+        let mark = icon(&CLAUDE, 16.0).key("glyph").label(word.to_owned());
+        return match a.state {
+            AgentState::NeedsYou { .. } => mark.color(k.c.danger.icon),
+            AgentState::Working | AgentState::Waiting => mark.color(theme::claude_color()).looping(LoopSpec::rotation(2.4)),
+            AgentState::Idle | AgentState::Ended => mark.color(theme::claude_color()).opacity(0.45),
+        };
+    }
+    match a.state {
+        AgentState::NeedsYou { .. } => braille(k.c.danger.icon, word),
+        AgentState::Working => braille(k.c.text_base, word),
+        AgentState::Waiting => text("⠿").key("glyph").label(word.to_owned()).font(theme::GLYPH).color(k.c.text_base).looping(LoopSpec::opacity(1.6, 0.0, 0.25, 1.0)),
+        AgentState::Idle | AgentState::Ended => text("⠶").key("glyph").label(word.to_owned()).font(theme::GLYPH).color(k.c.text_faint),
+    }
 }
 
 fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
     let a = line.agent;
     let address = a.address.clone();
-    SidebarRow::new(a.display_title().to_owned())
+    let row = SidebarRow::new(a.display_title().to_owned())
         .avatar(agent_glyph(k, line))
         .subtitle(model::meta(line))
         .subtitle_style(theme::META)
@@ -186,7 +222,12 @@ fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
         .selected(s.selected_agent.as_deref() == Some(a.address.as_str()))
         .on_select(move |s: &mut App, _tx| s.select_agent(address.clone()))
         .build(k)
-        .key(format!("agent/{}", a.address))
+        .key(format!("agent/{}", a.address));
+    // A row that needs you says why on hover.
+    match &a.state {
+        AgentState::NeedsYou { msg, .. } if !msg.trim().is_empty() => row.help(msg.clone()),
+        _ => row,
+    }
 }
 
 fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
@@ -204,7 +245,9 @@ fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
     if let Some(sub) = t.session.subtitle() {
         r = r.subtitle(sub);
     }
-    if s.status(id) == Status::Working {
+    if s.tab_needs_you(id) {
+        r = r.status(RowStatus::Attention);
+    } else if s.status(id) == Status::Working {
         r = r.status(RowStatus::Busy);
     }
     r.build(k).key(format!("term-{id}"))
