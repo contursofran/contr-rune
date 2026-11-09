@@ -48,8 +48,8 @@ fn ticks_sit_on_the_right_edge_of_the_orchestrator_terminal_only() {
     assert_eq!(r.find("outline").unwrap()["label"], "Orchestrator messages, 0 new");
     assert!(!r.has("outline/count"), "nothing is new while the owner looks");
     assert!(!r.has("outline/card"));
-    // The plain terminal (tab `t-1`) has none.
-    assert!(!run(vec![tap(0.5, "agent/t3"), tap(0.8, "t-1")]).has("outline"));
+    // The plain terminal (tab `t-2`) has none.
+    assert!(!run(vec![tap(0.5, "agent/t3"), tap(0.8, "t-2")]).has("outline"));
 }
 
 #[test]

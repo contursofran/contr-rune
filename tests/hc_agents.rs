@@ -82,7 +82,7 @@ fn agents_nest_under_their_project_with_the_kit_bounds_and_texts() {
     assert_eq!(r.rect("agent/t17"), [18.0, 166.0, 314.0, 44.0]);
     assert_eq!(r.rect("agent/t18"), [18.0, 212.0, 314.0, 44.0]);
     // The plain terminal tab stays a terminal row, after the agents.
-    assert_eq!(r.rect("term-1"), [18.0, 258.0, 314.0, 48.0]);
+    assert_eq!(r.rect("term-2"), [18.0, 258.0, 314.0, 48.0]);
     assert!(!r.has("agent/t20"), "a role=terminal terminal is a tab, not an agent");
     // Titles, meta lines and ages.
     assert_eq!(r.text_in("agent/t3", "label").as_deref(), Some("Plan H1"));
@@ -156,8 +156,8 @@ fn a_click_selects_one_agent_and_a_terminal_row_takes_it_back() {
     assert!(!r.selected("agent/t3") && !r.selected("agent/t18"));
     let r = run(base, vec![tap(0.5, "agent/t17"), tap(0.7, "agent/t18")]);
     assert!(r.selected("agent/t18") && !r.selected("agent/t17"), "one at a time");
-    let r = run(base, vec![tap(0.5, "agent/t17"), tap(0.7, "term-1")]);
-    assert!(!r.selected("agent/t17") && r.selected("term-1"));
+    let r = run(base, vec![tap(0.5, "agent/t17"), tap(0.7, "term-2")]);
+    assert!(!r.selected("agent/t17") && r.selected("term-2"));
     let r = calm();
     assert!(!r.selected("agent/t3") && !r.selected("agent/t17"), "no agent is selected at the start");
 }

@@ -54,11 +54,19 @@ pub struct Agent {
     pub issue: Option<String>,
     /// Whether the `worktree` label is set (its folder is a worktree, so its branch's PR is the worker's).
     pub worktree: bool,
+    /// The `contr.orchestrating` label: the session ran `/contr:orchestrate` (D191).
+    pub orchestrating: bool,
 }
 
 impl Agent {
     pub fn is_orchestrator(&self) -> bool {
         self.role == "orchestrator"
+    }
+
+    /// Whether the session orchestrates: it ran `/contr:orchestrate` or has a live worker (D191). The
+    /// role alone does not count: every main session is labelled `orchestrator`.
+    pub fn orchestrates(&self, agents: &[Agent]) -> bool {
+        self.orchestrating || agents.iter().any(|c| c.parent.as_deref() == Some(self.address.as_str()) && c.state != AgentState::Ended)
     }
 
     /// The row's title: the terminal's title, else its name.
@@ -158,6 +166,7 @@ pub fn derive(terminals: &[Terminal], stamps: &HashMap<String, u64>, known: &[Kn
             foreign: !ours,
             issue: label(t, "issue").map(str::to_owned),
             worktree: label(t, "worktree").is_some(),
+            orchestrating: label(t, "contr.orchestrating").is_some(),
         });
     }
     agents.sort_by_key(|a| (a.created_ms, number(&a.address)));
