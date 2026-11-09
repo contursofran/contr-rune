@@ -8,8 +8,10 @@ contr-rune is a Rust app on [Rune](https://github.com/anomalyco/rune), a GPU UI 
 `Cargo.toml`). It shows projects, terminal tabs and a real PTY terminal. We rebuild its look and behaviour to
 match the "contr · from zero" design.
 
-- Toolchain: Rust 1.99.1 (`rust-toolchain.toml`). `cargo` is not on PATH: start each shell command with
-  `. "$HOME/.cargo/env"`.
+- Toolchain: Rust 1.99.1 (`rust-toolchain.toml`). Cargo goes through mbx (a build cache): start each shell
+  command with `export PATH="$HOME/Library/Application Support/mbx/bin:$PATH:$HOME/.cargo/bin"` and run builds and
+  tests at low priority (`nice -n 10 cargo …`). Run only one cargo command at a time, in the foreground; never run
+  several `cargo test`s in parallel.
 - Rune source: `~/.cargo/git/checkouts/rune-*/<rev>/`. Read `crates/rune/README.md` there before you use a
   Rune feature you do not know.
 - Rune examples: `examples/` in that checkout (online: https://github.com/anomalyco/rune/tree/dev/examples;
