@@ -142,6 +142,10 @@ fn session_start_after_a_compaction_prints_the_restore_text_and_clears_the_marke
     assert!(!out.contains("Not mine") && !out.contains("Answered"));
     assert!(out.ends_with("The playbook:\n\nPLAYBOOK for (see the state file)"), "{out}");
     assert!(!w.marker("s1").exists(), "the next compaction is asked for again");
+    // No transcript file: the role still makes it a coordinator.
+    let (code, out, err) = w.run("session-start", json!({"source": "compact", "transcript_path": w.dir.join("none.jsonl")}), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.starts_with("contr: the conversation was compacted."), "{out}");
 }
 
 #[test]
