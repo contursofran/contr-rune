@@ -23,6 +23,7 @@ mod keys;
 mod notch;
 mod paths;
 mod pty;
+mod select;
 mod session;
 mod settings;
 mod shell;
@@ -159,6 +160,8 @@ struct App {
     card: notch::Card,
     /// Claude and Codex plan meters in the sidebar foot (H11).
     plans: usage::Plans,
+    /// The terminal text selection (T1).
+    select: select::Select,
 }
 
 fn init() -> App {
@@ -239,6 +242,7 @@ fn init() -> App {
         owner_stamp: None,
         card: notch::Card::default(),
         plans: usage::Plans::new(),
+        select: select::Select::default(),
     };
     app.reload_owner(true);
     app
@@ -790,6 +794,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::from_secs(30));
     }
     changed |= hc_fallbacks(s);
+    changed |= select::sweep(s);
     // The owner's file: look at it every second while the window has the focus, and not at all otherwise.
     if s.focused && s.owner.is_some() {
         changed |= s.reload_owner(false);
@@ -909,6 +914,10 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.focus_pane(1);
         return true;
     }
+    if is_shortcut(ev, 'c') {
+        if let Some(text) = select::copied(s) { tx.copy(text); }
+        return true;
+    }
     if is_shortcut(ev, 'v') {
         tx.read_clipboard(|s: &mut App, content, _tx| s.paste(content.text()));
         return true;
@@ -926,7 +935,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(t) = s.active_tab() else { return false };
     let mode = *t.session.term().lock().unwrap().mode();
     match keys::bytes(ev, mode) {
-        Some(b) => { t.session.write(&b); true }
+        Some(b) => { select::clear(s, t.session.id()); t.session.write(&b); true }
         None => false,
     }
 }

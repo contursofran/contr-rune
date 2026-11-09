@@ -7,7 +7,7 @@ use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, TextInput};
 
 use crate::split::Split;
 use crate::theme::*;
-use crate::{App, Tab, find, grid, label, notch, scroll_tab, shell, split};
+use crate::{App, Tab, find, grid, label, notch, scroll_tab, select, shell, split};
 
 
 pub(crate) fn terminal_panel(k: &Kit, s: &App) -> El {
@@ -96,11 +96,11 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
     let c = &k.c;
     let focused = !split || s.focus_idx() == idx;
     let Some(t) = s.tabs.iter().find(|t| t.session.id() == id) else { return col() };
-    let lines = {
+    let (lines, selected) = {
         let term = t.session.term().lock().unwrap();
         let matches = if s.find.open && focused { s.find.matches(id, t.session.generation().load(Ordering::Acquire), &term) } else { Default::default() };
         let current = (!matches.is_empty()).then(|| s.find.current.min(matches.len() - 1));
-        grid::lines(&term, s.focused && focused, &grid::Ink::from_kit(k), &matches, current)
+        (grid::lines(&term, s.focused && focused, &grid::Ink::from_kit(k), &matches, current), select::text(&term))
     };
     let (grid_key, body_key, row_prefix) = if idx == 0 {
         ("grid".to_owned(), "terminal/body".to_owned(), String::new())
@@ -114,13 +114,17 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
         .w_full()
         .clip_rounded(0.0)
         .on_layout(move |s: &mut App, [_, _, w, h]| s.set_grid_area(idx, w, h))
-        // A click on the grid focuses its pane and gives the keys back to the shell; the find bar and its highlights stay.
-        .on_press_tx(move |s: &mut App, tx: &mut Tx| {
-            s.focus_pane(idx);
-            if s.find.open {
-                s.find.edit.focused = false;
-                tx.blur();
+        // A press on the grid focuses its pane and gives the keys back to the shell (the find bar and its
+        // highlights stay); a drag selects text, a double press selects a word.
+        .on_drag(move |s: &mut App, d: &mut Drag, tx: &mut Tx| {
+            if d.phase == Phase::Down {
+                s.focus_pane(idx);
+                if s.find.open {
+                    s.find.edit.focused = false;
+                    tx.blur();
+                }
             }
+            select::drag(s, idx, d);
         })
         .on_wheel(move |s: &mut App, ev: WheelEvent, _tx| {
             s.wheel += ev.dy;
@@ -135,6 +139,10 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
         grid_el = grid_el.child(
             text(line.text).key(format!("{row_prefix}l{i}")).font(TERMINAL).color(c.text_base).spans(line.spans).h(LINE_H),
         );
+    }
+    // The selected text, for the tree (and screen readers); it takes no room.
+    if let Some(text) = selected {
+        grid_el = grid_el.child(el().key(format!("terminal/selection{}", if idx == 0 { String::new() } else { format!("/{idx}") })).label(text).pin(Some(0.0), Some(0.0), None, None).w(0.0).h(0.0));
     }
     let body = col().key(body_key).min_h(0.0).pt(PANEL_PAD_TOP).px(PANEL_PAD_X).pb(PANEL_PAD_BOTTOM).child(grid_el);
     if !split { return body.grow(1.0).w_full(); }
