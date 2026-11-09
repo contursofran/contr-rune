@@ -71,3 +71,9 @@ Before you open the PR: `cargo build` with no warnings and `cargo test` pass.
   holds the tree numbers against the spec.
 - No `Co-Authored-By`, AI attribution or "Generated with" lines in commits or PRs.
 - Flow: builder opens the PR → the owner runs it in a real window → fixes → merge. No reviewer agent in this repo (owner, 2026-11-08): the headless `--snap`, `--tree` and `--script` checks and tests replace it.
+
+## hc
+
+- Read `docs/design/HC-PLAN.md` before any H part. Its Contract section is the source of truth for methods, labels, keys and fixtures.
+- Headless runs (`--snap`, `--tree`, `--script`) and tests never dial a real hc unless `CONTR_HC_FAKE` is set (the fake core is in-process).
+- Never start, stop, kill or change the owner's real hc terminals from tests or agents. A test that needs a real core uses its own `HC_SESSION` and scratch dirs.

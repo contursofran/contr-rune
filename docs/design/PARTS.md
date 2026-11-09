@@ -51,3 +51,24 @@ closed for this plan.
 | K7b | Search in the terminal | `TextInput`, `IconButton`, alacritty_terminal regex search | The Search button and ⌘F open a floating find bar at the top right of the terminal (input, "3 of 12", previous, next, close). Typing finds plain text, any case, in the scrollback and screen; all matches are filled, the current one stronger; Return / ⌘G next, Shift+Return / ⌘⇧G previous, wrapping, the view scrolls to it. Esc closes the bar and returns the keys to the shell; another tab closes it. Done. |
 | K7c | Split terminal | `IconButton` pressed state, a draggable divider (`on_drag`, as the kit's pane grips) | The Split button and ⌘D put a new terminal of the same project on the right of the current one (also a tab and a sidebar row); the button shows pressed. One pane has focus (soft kit outline); keys, paste, scrollback keys and find act on it; a click or ⌘[ / ⌘] moves focus; the tab strip and sidebar follow the focus, and selecting another tab shows it in the focused pane. A kit hairline divider drags to resize (each pane keeps 20%); each PTY gets its own grid size. Split again or ⌘D un-splits (the focused pane takes the panel, the other stays as a tab); closing a pane's terminal does too. One split, two panes, side by side. Agent features come later. Done. |
 | Later | Split terminal, agent features | `Popover`, `Switch`, `Select` | Split terminal, questions notch and card, outline, and the rest of settings. Need agent data (hc) or later boards. |
+
+## H parts (hc)
+
+Agent data and terminals from hc (herdr-core). The plan, decisions and the Contract (C1-C9) are in
+`docs/design/HC-PLAN.md`; read it before any H part. API copies are in `docs/design/hc/`.
+
+| # | Part |
+|---|---|
+| H1 | Plain hc client, fake core, hc version in Settings |
+| H2 | Framed codec and fake framed core (no UI) |
+| H3 | Tabs are hc terminals |
+| H4 | Restore and recover hc tabs |
+| H5 | Agents in the sidebar |
+| H6 | Live agent state and needs-you |
+| H7 | Status probe script (owner check) |
+| H8 | Selecting an agent shows its terminal |
+| H9 | Questions notch and card |
+| H10 | Orchestrator outline |
+| H11 | Claude and Codex plan meters |
+| H12 | `contr-rune statusline` subcommand |
+| H13 | Context meter |
