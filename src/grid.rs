@@ -1,6 +1,7 @@
 //! The emulator's visible grid → one Rune text element per row, coloured with spans.
 
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Term, TermMode};
@@ -30,6 +31,8 @@ pub struct Ink {
     pub found_current: Color,
     /// The fill of selected text.
     pub selection: Color,
+    /// The underline of the link under the pointer while ⌘ is held.
+    pub link: Color,
 }
 
 impl Ink {
@@ -50,6 +53,7 @@ impl Ink {
             found: k.alpha(k.c.text_accent, 0.3),
             found_current: k.alpha(k.c.text_accent, 0.7),
             selection: k.selection(),
+            link: k.c.text_accent,
         }
     }
 }
@@ -121,8 +125,8 @@ fn resolve(c: AColor, colors: &Colors, fg: bool, ink: &Ink) -> Color {
 }
 
 /// The visible rows, with the block cursor drawn as an inverted cell and the search `found`
-/// matches filled (`current` more strongly) and the selection filled.
-pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink, found: &[Match], current: Option<usize>) -> Vec<Line> {
+/// matches filled (`current` more strongly), the selection filled and the cells of `link` (first and last) underlined.
+pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink, found: &[Match], current: Option<usize>, link: Option<(Point, Point)>) -> Vec<Line> {
     let content = term.renderable_content();
     let rows = term.screen_lines();
     let colors = content.colors;
@@ -179,8 +183,9 @@ pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink, found: &[Match], cur
             }
         }
 
+        let linked = link.is_some_and(|(a, b)| (a..=b).contains(&cell.point));
         let default_fg = fg == ink.text;
-        let plain = default_fg && !has_bg && !cell.flags.intersects(Flags::BOLD | Flags::ITALIC | Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
+        let plain = default_fg && !has_bg && !linked && !cell.flags.intersects(Flags::BOLD | Flags::ITALIC | Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
         if !(plain && ch == ' ') { keep[r] = end; }
         if plain { continue; }
 
@@ -189,7 +194,7 @@ pub fn lines(term: &Term<Events>, focused: bool, ink: &Ink, found: &[Match], cur
         if has_bg { span = span.bg(bg, 0.0); }
         if cell.flags.contains(Flags::BOLD) { span = span.bold(); }
         if cell.flags.contains(Flags::ITALIC) { span = span.italic(); }
-        if cell.flags.intersects(Flags::ALL_UNDERLINES) { span = span.underline(fg); }
+        if linked { span = span.underline(ink.link); } else if cell.flags.intersects(Flags::ALL_UNDERLINES) { span = span.underline(fg); }
 
         // Merge with the previous span when it continues it with the same look.
         if let Some(prev) = line.spans.last_mut()

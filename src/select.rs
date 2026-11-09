@@ -23,7 +23,19 @@ pub struct Select {
     pub opened: Option<String>,
     /// A drag held above or below the grid: it scrolls on every tick (T1b).
     auto: Option<Auto>,
+    /// Whether ⌘ is down (T2b).
+    pub cmd: bool,
+    /// Where the pointer is over a pane's grid, in the grid's points (T2b).
+    pub hover: Option<Hover>,
 }
+
+/// The pointer over pane `idx`'s grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hover { pub idx: usize, pub x: f32, pub y: f32 }
+
+/// A link in the grid: where it points and the first and last cell it covers (rows the shell wrapped included).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link { pub url: String, pub from: Point, pub to: Point }
 
 /// A selection drag whose pointer is outside the grid: the pane, which way to scroll (+1 back into the
 /// scrollback, -1 towards the screen) and the pointer's last position in the grid.
@@ -105,27 +117,51 @@ pub fn autoscroll(s: &mut App) -> bool {
     true
 }
 
-/// The link under `(x, y)` of pane `idx`'s grid that ⌘-click opens (T2): an OSC 8 hyperlink on the cell, else
-/// a URL written in the text. Only http, https and mailto count.
-pub fn link_at(s: &App, idx: usize, x: f32, y: f32) -> Option<String> {
+/// The link under `(x, y)` of pane `idx`'s grid that ⌘-click opens (T2).
+pub fn link_at(s: &App, idx: usize, x: f32, y: f32) -> Option<Link> {
     let id = s.pane_tab(idx)?;
     let t = s.tabs.iter().find(|t| t.session.id() == id)?;
     let term = t.session.term().lock().unwrap();
-    let (p, _) = at(&term, x, y);
-    let url = term.grid()[p].hyperlink().map(|h| h.uri().to_owned()).or_else(|| {
-        let (chars, idx) = logical_line(&term, p);
-        url_in(&chars, idx)
-    });
-    url.filter(|u| openable(u))
+    link_in(&term, x, y)
 }
 
-/// The text of the line `p` is on, rows joined where the shell wrapped them, and the index of `p`'s character in it.
-fn logical_line<T>(term: &Term<T>, p: Point) -> (Vec<char>, usize) {
+/// The link the pointer is on while ⌘ is held, in pane `idx`'s terminal `term` (T2b).
+pub fn hovered<T>(s: &App, idx: usize, term: &Term<T>) -> Option<Link> {
+    let h = s.select.hover.filter(|h| s.select.cmd && h.idx == idx)?;
+    link_in(term, h.x, h.y)
+}
+
+/// An OSC 8 hyperlink on the cell, else a URL written in the text. Only http, https and mailto count.
+fn link_in<T>(term: &Term<T>, x: f32, y: f32) -> Option<Link> {
+    let (p, _) = at(term, x, y);
+    let link = match term.grid()[p].hyperlink().map(|h| h.uri().to_owned()) {
+        Some(uri) => {
+            // The run of cells on this row that carry the same target.
+            let same = |c: usize| term.grid()[p.line][Column(c)].hyperlink().is_some_and(|h| h.uri() == uri);
+            let mut a = p.column.0;
+            while a > 0 && same(a - 1) { a -= 1; }
+            let mut b = p.column.0;
+            while b < term.last_column().0 && same(b + 1) { b += 1; }
+            Link { url: uri.clone(), from: Point::new(p.line, Column(a)), to: Point::new(p.line, Column(b)) }
+        }
+        None => {
+            let (chars, cells, idx) = logical_line(term, p);
+            let span = url_span(&chars, idx)?;
+            Link { url: chars[span.clone()].iter().collect(), from: cells[span.start], to: cells[span.end - 1] }
+        }
+    };
+    openable(&link.url).then_some(link)
+}
+
+/// The text of the line `p` is on, rows joined where the shell wrapped them, the cell each character
+/// came from, and the index of `p`'s character in it.
+fn logical_line<T>(term: &Term<T>, p: Point) -> (Vec<char>, Vec<Point>, usize) {
     let last = term.last_column();
     let wrapped = |line: Line| term.grid()[line][last].flags.contains(Flags::WRAPLINE);
     let mut first = p.line;
     while first > term.topmost_line() && wrapped(first - 1) { first -= 1; }
     let mut chars = Vec::new();
+    let mut cells = Vec::new();
     let mut at_p = 0;
     let mut line = first;
     loop {
@@ -137,11 +173,12 @@ fn logical_line<T>(term: &Term<T>, p: Point) -> (Vec<char>, usize) {
             }
             if line == p.line && c == p.column.0 { at_p = chars.len(); }
             chars.push(if cell.c == '\0' { ' ' } else { cell.c });
+            cells.push(Point::new(line, Column(c)));
         }
         if line >= term.bottommost_line() || !wrapped(line) { break; }
         line += 1;
     }
-    (chars, at_p)
+    (chars, cells, at_p)
 }
 
 /// Only these schemes open; anything else is left alone (Go D94).
@@ -150,9 +187,9 @@ fn openable(url: &str) -> bool {
     matches!(scheme.as_str(), "http" | "https" | "mailto")
 }
 
-/// The URL (`scheme://rest` or `mailto:rest`) in `chars` that covers index `at`, without the punctuation
-/// that ends a sentence (a closing bracket stays when its opening one is in the URL).
-fn url_in(chars: &[char], at: usize) -> Option<String> {
+/// Where the URL (`scheme://rest` or `mailto:rest`) in `chars` that covers index `at` is, without the
+/// punctuation that ends a sentence (a closing bracket stays when its opening one is in the URL).
+fn url_span(chars: &[char], at: usize) -> Option<std::ops::Range<usize>> {
     let is_scheme = |c: char| c.is_ascii_alphanumeric() || "+.-".contains(c);
     let mut i = 0;
     while i < chars.len() {
@@ -171,7 +208,7 @@ fn url_in(chars: &[char], at: usize) -> Option<String> {
             let unbalanced = open != '\0' && chars[start..end].iter().filter(|&&x| x == open).count() < chars[start..end].iter().filter(|&&x| x == c).count();
             if ".,;:!?".contains(c) || unbalanced { end -= 1 } else { break }
         }
-        if end > j + sep && (start..end).contains(&at) { return Some(chars[start..end].iter().collect()); }
+        if end > j + sep && (start..end).contains(&at) { return Some(start..end); }
         i = end.max(i);
     }
     None
@@ -254,7 +291,7 @@ mod tests {
     fn url(text: &str, needle: &str) -> Option<String> {
         let chars: Vec<char> = text.chars().collect();
         let at = text.find(needle).unwrap();
-        url_in(&chars, text[..at].chars().count())
+        url_span(&chars, text[..at].chars().count()).map(|r| chars[r].iter().collect())
     }
 
     #[test]
@@ -291,8 +328,11 @@ mod tests {
         let mut p: Processor = Processor::new();
         // 20 columns: the URL runs from row 0 over row 1.
         p.advance(&mut term, b"go https://exampl.io/long/path ok\r\n\x1b]8;;https://target.io\x1b\\label\x1b]8;;\x1b\\");
-        let (chars, at_p) = logical_line(&term, Point::new(Line(1), Column(3)));
-        assert_eq!(url_in(&chars, at_p).as_deref(), Some("https://exampl.io/long/path"));
+        let (chars, cells, at_p) = logical_line(&term, Point::new(Line(1), Column(3)));
+        let span = url_span(&chars, at_p).unwrap();
+        assert_eq!(chars[span.clone()].iter().collect::<String>(), "https://exampl.io/long/path");
+        // It starts on row 0 and ends on row 1.
+        assert_eq!((cells[span.start].line.0, cells[span.end - 1].line.0), (0, 1));
         let cell = &term.grid()[Point::new(Line(2), Column(1))];
         assert_eq!(cell.hyperlink().map(|h| h.uri().to_owned()).as_deref(), Some("https://target.io"));
     }
