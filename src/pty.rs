@@ -105,6 +105,14 @@ impl Pty {
         }
     }
 
+    /// The core's address of this tab's terminal (hc tabs only, once it exists).
+    pub fn address(&self) -> Option<String> {
+        match self {
+            Pty::Hc(s) => s.address(),
+            Pty::Local(_) => None,
+        }
+    }
+
     /// An event from the core for this tab's terminal (hc tabs only).
     pub fn hc_event(&self, address: &str, kind: TermEvent) {
         if let Pty::Hc(s) = self

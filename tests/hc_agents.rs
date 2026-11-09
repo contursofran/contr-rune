@@ -157,10 +157,10 @@ fn agents_nest_under_their_project_with_the_kit_bounds_and_texts() {
     assert_eq!(r.text("agent/t3", "detail").as_deref(), Some("14m"));
     assert_eq!(r.text("agent/t17", "detail").as_deref(), Some("6m"));
     assert_eq!(r.text("agent/t18", "detail").as_deref(), Some("2m"));
-    // The glyph column: the Claude mark (no text) for the orchestrator, the working glyph for t17.
+    // The glyph column (H6 tests the states): the Claude mark (no text) for the orchestrator, the working glyph for t17, needs-you for t18.
     assert!(r.child("agent/t3", "glyph").is_some_and(|g| g["text"].is_null()));
-    assert_eq!(r.text("agent/t17", "glyph").as_deref(), Some("⠋"));
-    assert!(r.child("agent/t18", "glyph").is_some());
+    assert_eq!(r.child("agent/t17", "glyph").and_then(|g| g["label"].as_str()), Some("working"));
+    assert_eq!(r.child("agent/t18", "glyph").and_then(|g| g["label"].as_str()), Some("needs you"));
     // The workers sit one level (16) in from the orchestrator's mark.
     let x = |row: &str| r.child(row, "avatar").unwrap()["rect"][0].as_f64().unwrap();
     assert_eq!(x("agent/t17") - x("agent/t3"), 16.0);
@@ -265,7 +265,7 @@ fn a_foreign_claude_terminal_is_an_orchestrator_row() {
     );
     assert_eq!(r.agents(), vec!["t3", "t17", "t18", "t50"]);
     assert_eq!(r.rect("agent/t50")[3], 48.0, "an orchestrator row");
-    assert_eq!(r.text("agent/t50", "subtitle").as_deref(), Some("orchestrator"));
+    assert_eq!(r.text("agent/t50", "subtitle").as_deref(), Some("orchestrator  idle"), "no status reported: idle");
 }
 
 #[test]

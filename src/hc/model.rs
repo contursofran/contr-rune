@@ -208,16 +208,17 @@ pub fn lines(agents: &[Agent], project: usize) -> Vec<Line<'_>> {
 }
 
 /// The row's second line: a worker shows `name  model` (`b-241  sonnet`); an orchestrator shows
-/// its model, else `N workers`, else `orchestrator`.
+/// its model, else `N workers`, else `orchestrator`, and `  idle` after it while it is idle.
 pub fn meta(line: &Line) -> String {
     let a = line.agent;
     if a.is_orchestrator() {
-        return match (&a.model, line.children) {
+        let what = match (&a.model, line.children) {
             (Some(m), _) => m.clone(),
             (None, 0) => "orchestrator".to_owned(),
             (None, 1) => "1 worker".to_owned(),
             (None, n) => format!("{n} workers"),
         };
+        return if a.state == AgentState::Idle { format!("{what}  idle") } else { what };
     }
     match &a.model {
         Some(m) => format!("{}  {m}", a.name),
@@ -230,9 +231,16 @@ fn labels_of(v: &Value) -> Option<std::collections::BTreeMap<String, String>> {
     Some(o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect())
 }
 
+/// Whether an event of this kind is the terminal doing something, so its age starts again.
+/// Size, foreground and label changes are not (the core reads the foreground about twice a second).
+pub fn is_activity(kind: &str) -> bool {
+    matches!(kind, "created" | "restarted" | "finished" | "lost" | "status" | "turn" | "title")
+}
+
 /// Apply one event to the terminal list (C4). Returns whether the list changed. `created` and
 /// `restarted` carry the whole record; `finished` and `lost` drop the foreground; `removed`
-/// drops the record. Other kinds are left to H6.
+/// drops the record; `status`, `turn`, `title`, `labels`, `size` and `foreground` set that field.
+/// `keep` and `doc` change nothing we show.
 pub fn apply(list: &mut Vec<Terminal>, ev: &Event) -> bool {
     let Some(addr) = ev.terminal.as_deref() else { return false };
     let at = list.iter().position(|t| t.address == addr);
@@ -268,7 +276,93 @@ pub fn apply(list: &mut Vec<Terminal>, ev: &Event) -> bool {
             list[i].labels = l;
             true
         }
+        "status" => {
+            // `status` is the root status, null when cleared; a missing key is not an update.
+            let (Some(i), Some(v)) = (at, ev.data.get("status")) else { return false };
+            let status = if v.is_null() {
+                None
+            } else {
+                match serde_json::from_value(v.clone()) {
+                    Ok(s) => Some(s),
+                    Err(_) => return false,
+                }
+            };
+            list[i].status = status;
+            true
+        }
+        "turn" => {
+            let (Some(i), Some(n)) = (at, ev.data["turn"].as_u64()) else { return false };
+            list[i].turn = n;
+            true
+        }
+        "size" => {
+            let (Some(i), Some(c), Some(r)) = (at, ev.data["cols"].as_u64(), ev.data["rows"].as_u64()) else { return false };
+            list[i].cols = c as u16;
+            list[i].rows = r as u16;
+            true
+        }
+        "foreground" => {
+            let Some(i) = at else { return false };
+            let fg = if ev.data.is_null() {
+                None
+            } else {
+                match serde_json::from_value(ev.data.clone()) {
+                    Ok(f) => Some(f),
+                    Err(_) => return false,
+                }
+            };
+            list[i].foreground = fg;
+            true
+        }
         _ => false,
+    }
+}
+
+/// The terminals the core has, kept current from its notifications (C4): the snapshot, then each
+/// event in order. `seq` rises by one per event; an event at or below the last one seen (a repeat,
+/// or one the snapshot already holds) is dropped. A `missed` snapshot replaces the list and sets
+/// the floor. `seq` restarts with each core, so a new connection starts a new `Live`.
+pub struct Live {
+    pub terminals: Vec<Terminal>,
+    /// The time (ms) of each terminal's last activity.
+    pub stamps: HashMap<String, u64>,
+    seen: u64,
+}
+
+impl Live {
+    pub fn new(terminals: Vec<Terminal>, seq: u64) -> Live {
+        Live { terminals, stamps: HashMap::new(), seen: seq }
+    }
+
+    /// Take one event at time `now`. Returns whether the terminal list changed.
+    pub fn event(&mut self, ev: &Event, now: u64) -> bool {
+        if ev.seq <= self.seen {
+            return false;
+        }
+        self.seen = ev.seq;
+        let Some(addr) = ev.terminal.as_deref() else { return false };
+        let changed = apply(&mut self.terminals, ev);
+        if !self.terminals.iter().any(|t| t.address == addr) {
+            self.stamps.remove(addr);
+        } else if changed && is_activity(&ev.kind) {
+            self.stamps.insert(addr.to_owned(), now);
+        }
+        changed
+    }
+
+    /// Take a `missed` snapshot: it replaces the list, and events up to `seq` are history. A
+    /// terminal that differs from what we had counts as active now; one that went has no stamp.
+    pub fn missed(&mut self, seq: u64, terminals: Vec<Terminal>, now: u64) -> bool {
+        self.seen = self.seen.max(seq);
+        let changed = self.terminals != terminals;
+        for t in &terminals {
+            if self.terminals.iter().find(|o| o.address == t.address) != Some(t) {
+                self.stamps.insert(t.address.clone(), now);
+            }
+        }
+        self.stamps.retain(|a, _| terminals.iter().any(|t| &t.address == a));
+        self.terminals = terminals;
+        changed
     }
 }
 
@@ -481,10 +575,10 @@ mod tests {
         let m = |addr: &str, project: usize| meta(lines(&a, project).iter().find(|l| l.agent.address == addr).unwrap());
         assert_eq!(m("t17", 0), "b-241  sonnet");
         assert_eq!(m("t18", 0), "b-242");
-        assert_eq!(m("t3", 0), "opus");
-        assert_eq!(m("t4", 1), "2 workers");
+        assert_eq!(m("t3", 0), "opus  idle");
+        assert_eq!(m("t4", 1), "2 workers  idle");
         let solo = run(&[agent_t("t7", 1, "orchestrator", "a")], 10);
-        assert_eq!(meta(&lines(&solo, 0)[0]), "orchestrator");
+        assert_eq!(meta(&lines(&solo, 0)[0]), "orchestrator  idle");
     }
 
     fn ev(kind: &str, terminal: Option<&str>, data: Value) -> Event {
@@ -527,7 +621,153 @@ mod tests {
         assert!(apply(&mut list, &ev("labels", Some("t1"), json!({"labels": {"role": "reviewer"}}))));
         assert_eq!(list[0].labels.get("role").map(String::as_str), Some("reviewer"));
         assert!(!apply(&mut list, &ev("title", Some("t1"), json!({}))));
-        assert!(!apply(&mut list, &ev("size", Some("t1"), json!({"cols": 1, "rows": 1}))));
+        assert!(!apply(&mut list, &ev("keep", Some("t1"), json!({"keep": true}))));
         assert!(!apply(&mut list, &ev("doc", None, json!({}))));
+    }
+
+    #[test]
+    fn status_sets_replaces_and_clears_the_status() {
+        let mut list = vec![agent_t("t1", 1, "builder", "a")];
+        let blocked = json!({"status": {"state": "blocked", "kind": "permission", "msg": "Run it?"}, "records": {}, "reported": true});
+        assert!(apply(&mut list, &ev("status", Some("t1"), blocked)));
+        let s = list[0].status.clone().unwrap();
+        assert_eq!((s.state.as_str(), s.kind.as_deref(), s.msg.as_str()), ("blocked", Some("permission"), "Run it?"));
+        assert!(apply(&mut list, &ev("status", Some("t1"), json!({"status": {"state": "working"}, "records": {}, "reported": true}))));
+        assert_eq!(list[0].status.as_ref().map(|s| s.state.as_str()), Some("working"));
+        assert!(apply(&mut list, &ev("status", Some("t1"), json!({"status": null, "records": {}, "reported": true}))));
+        assert!(list[0].status.is_none(), "null clears it");
+        // No `status` key, a bad shape or an unknown terminal change nothing.
+        list[0].status = status("working", None);
+        assert!(!apply(&mut list, &ev("status", Some("t1"), json!({}))));
+        assert!(!apply(&mut list, &ev("status", Some("t1"), json!({"status": "nope"}))));
+        assert!(!apply(&mut list, &ev("status", Some("t9"), json!({"status": null}))));
+        assert_eq!(list[0].status.as_ref().map(|s| s.state.as_str()), Some("working"));
+    }
+
+    #[test]
+    fn turn_size_and_foreground_set_their_field() {
+        let mut list = vec![agent_t("t1", 1, "builder", "a")];
+        assert!(apply(&mut list, &ev("turn", Some("t1"), json!({"turn": 5, "state": "idle"}))));
+        assert_eq!(list[0].turn, 5);
+        assert!(!apply(&mut list, &ev("turn", Some("t1"), json!({"state": "idle"}))));
+        assert!(apply(&mut list, &ev("size", Some("t1"), json!({"cols": 90, "rows": 30}))));
+        assert_eq!((list[0].cols, list[0].rows), (90, 30));
+        assert!(!apply(&mut list, &ev("size", Some("t1"), json!({"cols": 90}))));
+        assert!(apply(&mut list, &ev("foreground", Some("t1"), json!({"pid": 7, "name": "claude", "argv": [], "cwd": "/x"}))));
+        assert_eq!(list[0].foreground.as_ref().map(|f| f.name.as_str()), Some("claude"));
+        assert!(apply(&mut list, &ev("foreground", Some("t1"), Value::Null)));
+        assert!(list[0].foreground.is_none());
+        assert!(!apply(&mut list, &ev("foreground", Some("t9"), Value::Null)));
+        assert!(!apply(&mut list, &ev("keep", Some("t1"), json!({"keep": true}))));
+    }
+
+    #[test]
+    fn a_status_event_turns_the_agent_state() {
+        let mut list = vec![agent_t("t1", 1, "orchestrator", "a"), agent_t("t2", 2, "builder", "a")];
+        list[1].parent = Some("t1".into());
+        let states = |l: &[Terminal]| run(l, 10).iter().map(|a| a.state.clone()).collect::<Vec<_>>();
+        assert_eq!(states(&list), vec![AgentState::Idle, AgentState::Idle]);
+        apply(&mut list, &ev("status", Some("t2"), json!({"status": {"state": "working"}})));
+        assert_eq!(states(&list), vec![AgentState::Waiting, AgentState::Working]);
+        apply(&mut list, &ev("status", Some("t2"), json!({"status": {"state": "blocked", "kind": "question", "msg": "Which?"}})));
+        assert_eq!(states(&list), vec![AgentState::Idle, AgentState::NeedsYou { kind: Some("question".into()), msg: "Which?".into() }]);
+        apply(&mut list, &ev("finished", Some("t2"), json!({"reason": "exited", "exit_code": 0})));
+        assert_eq!(states(&list), vec![AgentState::Idle, AgentState::Ended]);
+        // Done and error are rest states; an orchestrator that works itself is Working, not Waiting.
+        apply(&mut list, &ev("status", Some("t1"), json!({"status": {"state": "working"}})));
+        assert_eq!(states(&list)[0], AgentState::Working);
+        apply(&mut list, &ev("status", Some("t1"), json!({"status": {"state": "done"}})));
+        assert_eq!(states(&list)[0], AgentState::Idle);
+    }
+
+    #[test]
+    fn an_orchestrator_waits_only_for_a_live_working_child() {
+        let orch = agent_t("t1", 1, "orchestrator", "a");
+        let mut kid = agent_t("t2", 2, "builder", "a");
+        kid.parent = Some("t1".into());
+        kid.status = status("working", None);
+        // A working grandchild does not make the grandparent wait; a finished child does not either.
+        let mut grand = agent_t("t3", 3, "builder", "a");
+        grand.parent = Some("t2".into());
+        grand.status = status("working", None);
+        let mut idle_kid = kid.clone();
+        idle_kid.status = None;
+        assert_eq!(run(&[orch.clone(), idle_kid.clone(), grand], 10)[0].state, AgentState::Idle);
+        let mut done_kid = kid;
+        done_kid.state = "finished".into();
+        assert_eq!(run(&[orch, done_kid], 10)[0].state, AgentState::Idle);
+    }
+
+    #[test]
+    fn only_activity_events_start_the_age_again() {
+        for k in ["created", "restarted", "finished", "lost", "status", "turn", "title"] {
+            assert!(is_activity(k), "{k}");
+        }
+        for k in ["size", "foreground", "labels", "keep", "removed", "doc"] {
+            assert!(!is_activity(k), "{k}");
+        }
+    }
+
+    fn live() -> Live {
+        Live::new(vec![agent_t("t1", 1, "builder", "a"), agent_t("t2", 2, "builder", "a")], 5)
+    }
+
+    fn at(seq: u64, kind: &str, terminal: &str, data: Value) -> Event {
+        Event { seq, kind: kind.into(), terminal: Some(terminal.into()), data }
+    }
+
+    #[test]
+    fn live_drops_events_at_or_below_the_seen_seq() {
+        let mut l = live();
+        let working = json!({"status": {"state": "working"}});
+        assert!(!l.event(&at(5, "status", "t1", working.clone()), 100), "the snapshot already holds seq 5");
+        assert!(l.terminals[0].status.is_none() && l.stamps.is_empty());
+        assert!(l.event(&at(6, "status", "t1", working.clone()), 100));
+        assert!(!l.event(&at(6, "status", "t2", working.clone()), 200), "a repeat of seq 6");
+        assert!(!l.event(&at(3, "status", "t2", working.clone()), 200), "an older one");
+        assert!(l.terminals[1].status.is_none());
+        assert!(l.event(&at(9, "status", "t2", working), 300), "gaps are fine");
+        assert_eq!(l.stamps.get("t1"), Some(&100));
+        assert_eq!(l.stamps.get("t2"), Some(&300));
+    }
+
+    #[test]
+    fn live_stamps_activity_only_and_forgets_removed_terminals() {
+        let mut l = live();
+        assert!(l.event(&at(6, "size", "t1", json!({"cols": 1, "rows": 1})), 100));
+        assert!(l.stamps.is_empty(), "a resize is not activity");
+        assert!(l.event(&at(7, "turn", "t1", json!({"turn": 3})), 150));
+        assert_eq!(l.stamps.get("t1"), Some(&150));
+        assert!(!l.event(&at(8, "title", "t1", json!({})), 160), "nothing changed");
+        assert_eq!(l.stamps.get("t1"), Some(&150));
+        assert!(l.event(&at(9, "removed", "t1", json!({})), 170));
+        assert!(!l.stamps.contains_key("t1") && l.terminals.len() == 1);
+        let no_terminal = Event { seq: 10, kind: "doc".into(), terminal: None, data: json!({}) };
+        assert!(!l.event(&no_terminal, 180));
+    }
+
+    #[test]
+    fn a_missed_snapshot_replaces_the_list_and_sets_the_floor() {
+        let mut l = live();
+        l.event(&at(6, "turn", "t2", json!({"turn": 1})), 100);
+        let mut a = agent_t("t1", 1, "builder", "a");
+        a.status = status("blocked", Some("auth"));
+        let fresh = vec![a, agent_t("t3", 3, "builder", "a")];
+        assert!(l.missed(20, fresh.clone(), 500));
+        assert_eq!(l.terminals, fresh, "t2 is gone, t3 is new");
+        assert_eq!(l.stamps.get("t1"), Some(&500), "a changed record is active now");
+        assert_eq!(l.stamps.get("t3"), Some(&500));
+        assert!(!l.stamps.contains_key("t2"), "a gone terminal has no stamp");
+        // Events behind the snapshot are history; the next one applies.
+        assert!(!l.event(&at(15, "title", "t1", json!({"title": "old"})), 600));
+        assert_eq!(l.terminals[0].title, "");
+        assert!(l.event(&at(21, "title", "t1", json!({"title": "new"})), 700));
+        // The same snapshot again changes nothing and stamps nothing new.
+        let same = l.terminals.clone();
+        assert!(!l.missed(30, same, 900));
+        assert_eq!(l.stamps.get("t1"), Some(&700));
+        // A stale snapshot never lowers the floor.
+        l.missed(10, l.terminals.clone(), 950);
+        assert!(!l.event(&at(25, "title", "t1", json!({"title": "x"})), 960));
     }
 }

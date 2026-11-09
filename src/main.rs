@@ -422,6 +422,12 @@ impl App {
         self.statuses.iter().find(|(i, _)| *i == id).map(|(_, s)| *s).unwrap_or(Status::Idle)
     }
 
+    /// The program in an hc tab reports `blocked`: it waits for the owner.
+    fn tab_needs_you(&self, id: u64) -> bool {
+        let Some(address) = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| t.session.address()) else { return false };
+        self.hc_terminals.iter().any(|t| t.address == address && t.state != "finished" && t.status.as_ref().is_some_and(|s| s.state == "blocked"))
+    }
+
     /// The focused pane (always 0 without a split).
     fn focus_idx(&self) -> usize {
         self.split.as_ref().map_or(0, |sp| sp.focus)
@@ -890,7 +896,12 @@ fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>) -> El {
     let project = s.selected_project;
     let titles: Vec<(u64, String)> = s.project_tabs(project).map(|t| (t.session.id(), t.session.tab_title())).collect();
     let items = titles.iter().map(|(id, title)| {
-        let status = (s.status(*id) == Status::Working).then_some(TabItemStatus::Busy);
+        // Needs-you wins over busy.
+        let status = if s.tab_needs_you(*id) {
+            Some(TabItemStatus::Attention)
+        } else {
+            (s.status(*id) == Status::Working).then_some(TabItemStatus::Busy)
+        };
         TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status)
     });
     let active = s.active.map(tab_id);
