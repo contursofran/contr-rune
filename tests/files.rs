@@ -104,7 +104,7 @@ fn head_and_rows_sit_where_the_kit_preview_has_them() {
     assert_eq!(t.rect("docs")[..], [1410.0, 76.0, 282.0, 26.0]);
     assert_eq!(t.rect("gone")[1], 102.0);
     assert_eq!(t.rect("tree")[..3], [1410.0, 76.0, 282.0]);
-    assert_eq!(t.find("files/title").unwrap()["text"], "repo");
+    assert_eq!(t.find("files/title").unwrap()["text"], "Files");
 }
 
 #[test]
