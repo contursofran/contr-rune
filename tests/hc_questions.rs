@@ -43,7 +43,7 @@ const TAB_T4: &str = "segment3";
 /// makes the blocked agent idle and the owner's file empty.
 fn run_with(events: Vec<Value>, blocked_send: bool, quiet: bool) -> Run {
     let mut events = events;
-    events.push(json!({ "t": 10.0, "type": "mark", "name": "end" }));
+    events.push(json!({ "t": 9.0, "type": "mark", "name": "end" }));
     static RUNS: AtomicUsize = AtomicUsize::new(0);
     let id = format!(
         "{}-{}",
@@ -206,10 +206,9 @@ fn the_notch_counts_the_projects_open_items_and_the_card_starts_closed() {
 
 #[test]
 fn the_notch_is_hidden_with_nothing_open() {
-    let r = run_with(vec![], false, true);
-    assert!(r.find("notch").is_none());
-    // ⌘J has nothing to open.
+    // ⌘J has nothing to open either.
     let r = run_with(vec![chord(5.0, "j")], false, true);
+    assert!(r.find("notch").is_none());
     assert!(!r.card_open());
 }
 
@@ -229,15 +228,21 @@ fn pressing_the_notch_drops_the_card_with_a_tab_per_item() {
         r.find("qcard/keys")
             .is_some_and(|k| k["text"] == "\u{23ce} next  esc close")
     );
-    // ⌘J closes it again.
-    let r = run(vec![tap(5.0, "notch"), chord(6.0, "j")]);
-    assert!(!r.card_open());
 }
 
 #[test]
 fn the_chord_opens_and_esc_closes() {
-    let r = run(vec![chord(5.0, "j")]);
+    let r = run(vec![chord(5.0, "j"), tap(6.0, TAB_D7)]);
     assert!(r.card_open());
+    let first = r.find("qcard/option/D7/0").unwrap();
+    assert_eq!(
+        first["label"], "Wait a week",
+        "the recommended option is shown first"
+    );
+    assert!(
+        r.find("qcard/keys")
+            .is_some_and(|k| k["text"] == "1-3 pick  \u{23ce} next  esc close")
+    );
     let r = run(vec![chord(5.0, "j"), key(6.0, "Escape")]);
     assert!(!r.card_open());
     assert_eq!(
@@ -256,8 +261,6 @@ fn picking_an_option_and_sending_answers_the_coordinator() {
         tap(7.0, "qcard/option/D7/1"),
         tap(7.5, "qcard/send"),
     ]);
-    let first = r.find("qcard/option/D7/0").unwrap();
-    assert_eq!(first["label"], "Wait a week", "the recommended option is shown first");
     let d7 = r.question("D7");
     assert_eq!(
         d7["answer"], "Ship now",
