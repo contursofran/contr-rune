@@ -92,3 +92,11 @@ fn a_broken_file_shows_the_error_and_a_pick_does_not_overwrite_it() {
     assert!(t.has("roles/error"));
     assert_eq!(t.file("agents.json"), "{ broken");
 }
+
+#[test]
+fn a_valid_json_file_with_a_bad_profile_shows_the_error_and_a_pick_does_not_overwrite_it() {
+    let bad = r#"{"profiles":{"builder":{"argv":[]}},"theme":{"accent":"blue"}}"#;
+    let t = run(bad, vec![tap(0.3, GEAR), tap(0.6, AGENTS), tap(0.9, "role/planner/model-trigger"), tap(1.1, "option0")]);
+    assert!(t.has("roles/error"));
+    assert_eq!(t.file("agents.json"), bad);
+}
