@@ -43,6 +43,16 @@ The app is built from **rune-kit** components on rune-kit's **neutral theme** (o
 - The part must **look** like the reference and **work** like it. Keep what works (PTY, keys, scrollback,
   close on exit).
 
+## Stay in scope
+
+- Do only what the brief asks. No extra features, refactors, renames, reformatting or "while I am here" fixes.
+  Write other ideas in the PR under "Not done" and do not build them.
+- No speculative code: no options, parameters, traits, modules or files that nothing uses yet. Delete code your
+  change makes dead.
+- If the brief is unclear, or the plan turns out wrong, stop and report it. Do not widen the task to work around it.
+- Keep the PR small: about 400 changed lines of code at most, not counting tests, fixtures and snaps. If the part
+  needs more, stop and propose a split.
+
 ## Look
 
 - Use a rune-kit component wherever one exists. Build a custom element only when rune-kit has none (for
@@ -67,7 +77,21 @@ Rune runs headless. Every part must be checked in three ways, not by eye alone:
    the `--tree` output.
 
 Make 2 and 3 a lasting integration test under `tests/`, so a later part cannot break this part silently.
-If the PTY makes a test flaky, use a scene with fake terminals.
+
+## Tests: few, fast, useful
+
+- Each test protects one behaviour that a user or a later part depends on. Do not test the type system,
+  constants, simple getters, Rune or rune-kit behaviour, or something another test already covers.
+- Prefer a unit test of a pure function. Use a headless `--script`/`--tree` test only for what needs the UI
+  (bounds, clicks, keys). One headless test per behaviour, not per variant: put variants in a table in a unit test.
+- Use a real PTY or shell only when the test is about the PTY. Otherwise use a fake terminal or the fake hc.
+- Budget: a unit test under 50 ms, a headless test under 3 s, a whole new test file under 15 s. A slower test
+  needs a reason in the PR.
+- No `sleep` and no polling loops. Wait on a state (the tree, the fake log) and keep script end times short.
+- When behaviour changes, change or delete the old tests. Never keep tests for behaviour that is gone.
+- While you work, run only the test file you touch. Run the full suite once, before the PR, through the shared
+  lock so two agents never run tests at the same time:
+  `flock /tmp/contr-rune-tests.lock nice -n 10 cargo test` (`flock` from Homebrew: `brew install flock`).
 
 Before you open the PR: `cargo build` with no warnings and `cargo test` pass.
 
