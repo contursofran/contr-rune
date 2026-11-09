@@ -1,8 +1,15 @@
 //! The `gh` commands the app runs (K5), in an agent's worktree. `CONTR_GH` names the program (tests
 //! point it at a script); a headless run without it never runs a real `gh`.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
+
+use rune::Waker;
+
+use crate::hc::model::{Agent, AgentState};
 
 /// The program to run: `CONTR_GH`, else `gh` (not in a headless run).
 fn program() -> Option<String> {
@@ -49,6 +56,167 @@ pub fn pr_head(dir: &Path, pr: i64) -> Result<String, String> {
     }
 }
 
+/// The title of issue `n` (`gh issue view <n> --json title`).
+pub fn issue_title(dir: &Path, n: &str) -> Result<String, String> {
+    parse_title(&gh(dir, &["issue", "view", n, "--json", "title"])?).ok_or_else(|| format!("issue {n} has no title"))
+}
+
+/// The title in `gh issue view --json title` output.
+fn parse_title(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned)
+}
+
+/// Whether the branch in `dir` has an open pull request with unfinished checks. `Ok(false)` without a PR.
+pub fn checks_pending(dir: &Path) -> Result<bool, String> {
+    match gh(dir, &["pr", "view", "--json", "number,state,statusCheckRollup"]) {
+        Ok(out) => Ok(parse_pending(&out)),
+        Err(e) if e.contains("no pull requests found") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `gh pr view --json number,state,statusCheckRollup` output is an open PR with a check
+/// that has not finished (a run not `COMPLETED`, a status `PENDING` or `EXPECTED`), as Go does (D145).
+fn parse_pending(json: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return false };
+    if v["state"].as_str() != Some("OPEN") {
+        return false;
+    }
+    v["statusCheckRollup"].as_array().is_some_and(|checks| {
+        checks.iter().any(|c| match (c["status"].as_str(), c["state"].as_str()) {
+            (Some(status), _) => status != "COMPLETED",
+            (None, Some(state)) => matches!(state, "PENDING" | "EXPECTED"),
+            _ => false,
+        })
+    })
+}
+
+/// A found title holds this long; a failed read is asked again after `RETRY` (D174).
+const TITLE_HOLD: Duration = Duration::from_secs(600);
+const RETRY: Duration = Duration::from_secs(300);
+/// An answer with pending checks holds a minute (they end soon), any other five (D145).
+const CI_PENDING_HOLD: Duration = Duration::from_secs(60);
+const CI_HOLD: Duration = Duration::from_secs(300);
+
+#[derive(Default)]
+struct Entry {
+    issue: Option<String>,
+    title: Option<String>,
+    title_hold: Option<(Instant, Duration)>,
+    ci: bool,
+    ci_hold: Option<(Instant, Duration)>,
+}
+
+fn fresh(hold: Option<(Instant, Duration)>, now: Instant) -> bool {
+    hold.is_some_and(|(at, d)| now.duration_since(at) < d)
+}
+
+/// One read for an agent: the issue to look up (`None`: not asked) and whether to read its CI.
+struct Job {
+    address: String,
+    dir: PathBuf,
+    issue: Option<String>,
+    ci: bool,
+}
+
+struct Answer {
+    address: String,
+    title: Option<Result<String, String>>,
+    ci: Option<Result<bool, String>>,
+}
+
+/// Issue titles and CI state of the agents, read by `gh` on a thread. Nothing runs without a
+/// focused window or without a `gh` to run, and only for an agent with no fresh answer, so an
+/// idle screen does nothing.
+pub struct Info {
+    entries: HashMap<String, Entry>,
+    inflight: bool,
+    tx: Sender<Vec<Answer>>,
+    rx: Receiver<Vec<Answer>>,
+}
+
+impl Info {
+    pub fn new() -> Info {
+        let (tx, rx) = channel();
+        Info { entries: HashMap::new(), inflight: false, tx, rx }
+    }
+
+    /// The issue title of an agent, once read.
+    pub fn title(&self, address: &str) -> Option<&str> {
+        self.entries.get(address)?.title.as_deref()
+    }
+
+    /// Whether to show `CI` on a row: the agent is live and not working and its PR has unfinished checks.
+    pub fn ci(&self, a: &Agent) -> bool {
+        !matches!(a.state, AgentState::Working | AgentState::Ended) && self.entries.get(&a.address).is_some_and(|e| e.ci)
+    }
+
+    /// Take finished reads and start one for the agents with no fresh answer. Returns whether
+    /// something shown changed.
+    pub fn poll(&mut self, agents: &[Agent], focused: bool, waker: Option<&Waker>) -> bool {
+        let mut changed = false;
+        while let Ok(batch) = self.rx.try_recv() {
+            self.inflight = false;
+            let now = Instant::now();
+            for a in batch {
+                let Some(e) = self.entries.get_mut(&a.address) else { continue };
+                if let Some(t) = a.title {
+                    e.title_hold = Some((now, if t.is_ok() { TITLE_HOLD } else { RETRY }));
+                    // A failed read keeps what was known.
+                    if let Ok(t) = t {
+                        changed |= e.title.replace(t.clone()).as_deref() != Some(t.as_str());
+                    }
+                }
+                if let Some(c) = a.ci {
+                    let pending = *c.as_ref().unwrap_or(&e.ci);
+                    e.ci_hold = Some((now, if c.is_err() { RETRY } else if pending { CI_PENDING_HOLD } else { CI_HOLD }));
+                    if let Ok(c) = c {
+                        changed |= std::mem::replace(&mut e.ci, c) != c;
+                    }
+                }
+            }
+        }
+        if !focused || self.inflight || program().is_none() {
+            return changed;
+        }
+        let now = Instant::now();
+        self.entries.retain(|k, _| agents.iter().any(|a| &a.address == k));
+        let mut jobs = Vec::new();
+        for a in agents.iter().filter(|a| a.state != AgentState::Ended) {
+            let Some(dir) = a.folder.clone().filter(|f| f.is_dir()) else { continue };
+            let e = self.entries.entry(a.address.clone()).or_default();
+            if e.issue != a.issue {
+                *e = Entry { issue: a.issue.clone(), ..Entry::default() };
+            }
+            let issue = a.issue.clone().filter(|_| !fresh(e.title_hold, now));
+            let ci = a.worktree && !a.is_orchestrator() && !fresh(e.ci_hold, now);
+            if issue.is_some() || ci {
+                jobs.push(Job { address: a.address.clone(), dir, issue, ci });
+            }
+        }
+        if !jobs.is_empty() {
+            self.inflight = true;
+            let (out, waker) = (self.tx.clone(), waker.cloned());
+            std::thread::spawn(move || {
+                let batch = jobs
+                    .into_iter()
+                    .map(|j| Answer {
+                        title: j.issue.as_deref().map(|n| issue_title(&j.dir, n)),
+                        ci: j.ci.then(|| checks_pending(&j.dir)),
+                        address: j.address,
+                    })
+                    .collect();
+                let _ = out.send(batch);
+                if let Some(w) = &waker {
+                    w();
+                }
+            });
+        }
+        changed
+    }
+}
+
 /// `owner/repo` of a GitHub remote URL (`<user>@github.com:o/r.git`, `https://github.com/o/r`).
 pub fn parse_remote(url: &str) -> Option<String> {
     let path = url.trim().split_once("github.com").map(|(_, p)| p)?;
@@ -88,6 +256,38 @@ pub fn origin_repo(dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue_titles_come_from_the_json() {
+        for (json, want) in [
+            (r#"{"title":"Fix the thing"}"#, Some("Fix the thing")),
+            (r#"{"title":"  padded "}"#, Some("padded")),
+            (r#"{"title":""}"#, None),
+            (r#"{}"#, None),
+            ("not json", None),
+        ] {
+            assert_eq!(parse_title(json).as_deref(), want, "{json}");
+        }
+    }
+
+    #[test]
+    fn checks_are_pending_only_on_an_open_pr_with_an_unfinished_check() {
+        let run = |status: &str| format!(r#"{{"status":"{status}","conclusion":""}}"#);
+        let ctx = |state: &str| format!(r#"{{"state":"{state}"}}"#);
+        let pr = |state: &str, checks: &[String]| format!(r#"{{"number":1,"state":"{state}","statusCheckRollup":[{}]}}"#, checks.join(","));
+        for (json, want) in [
+            (pr("OPEN", &[run("COMPLETED"), run("COMPLETED")]), false),
+            (pr("OPEN", &[run("COMPLETED"), run("IN_PROGRESS")]), true),
+            (pr("OPEN", &[run("QUEUED")]), true),
+            (pr("OPEN", &[ctx("PENDING")]), true),
+            (pr("OPEN", &[ctx("SUCCESS"), ctx("FAILURE")]), false),
+            (pr("OPEN", &[]), false),
+            (pr("MERGED", &[run("IN_PROGRESS")]), false),
+            ("garbage".to_owned(), false),
+        ] {
+            assert_eq!(parse_pending(&json), want, "{json}");
+        }
+    }
 
     #[test]
     fn remotes_parse_to_owner_and_repo() {

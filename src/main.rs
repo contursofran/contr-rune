@@ -154,6 +154,8 @@ struct App {
     hc_stamps: HashMap<String, u64>,
     agents: Vec<Agent>,
     agents_minute: u64,
+    /// Issue titles and CI state of the agents, read by `gh` (A4).
+    gh: github::Info,
     /// The agent row that is selected (its address). Showing its terminal comes in H8.
     selected_agent: Option<String>,
     agent_menu: sidebar::AgentMenu,
@@ -253,6 +255,7 @@ fn init() -> App {
         hc_stamps: HashMap::new(),
         agents: Vec::new(),
         agents_minute: 0,
+        gh: github::Info::new(),
         selected_agent: None,
         agent_menu: Default::default(),
         find: Find::new(),
@@ -833,6 +836,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
         changed |= s.reload_owner(false);
         tx.wake_after(OWNER_EVERY);
     }
+    changed |= s.gh.poll(&s.agents, s.focused, s.waker.as_ref());
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
     changed |= s.context.poll(s.selected_agent.as_deref(), s.focused, tx);
     changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);

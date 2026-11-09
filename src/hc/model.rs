@@ -50,6 +50,10 @@ pub struct Agent {
     pub created_ms: u64,
     /// No `contr=agent` label: found by the Claude process in it.
     pub foreign: bool,
+    /// The `issue` label (a number), if any.
+    pub issue: Option<String>,
+    /// Whether the `worktree` label is set (its folder is a worktree, so its branch's PR is the worker's).
+    pub worktree: bool,
 }
 
 impl Agent {
@@ -152,6 +156,8 @@ pub fn derive(terminals: &[Terminal], stamps: &HashMap<String, u64>, known: &[Kn
             state,
             created_ms: t.created_ms,
             foreign: !ours,
+            issue: label(t, "issue").map(str::to_owned),
+            worktree: label(t, "worktree").is_some(),
         });
     }
     agents.sort_by_key(|a| (a.created_ms, number(&a.address)));
