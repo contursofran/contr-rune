@@ -9,6 +9,7 @@
 //! (⌘F; ⌘G / ⌘⇧G or Return / Shift+Return step, esc closes), Ctrl+Shift+D split (⌘D), Ctrl+Shift+[ / ]
 //! focus the left / right pane (⌘[ / ⌘]), Ctrl+Shift+J the questions card (⌘J).
 
+mod cli;
 mod dialog;
 mod diff;
 mod files;
@@ -17,6 +18,7 @@ mod grid;
 mod hc;
 mod keys;
 mod notch;
+mod paths;
 mod pty;
 mod session;
 mod settings;
@@ -985,6 +987,7 @@ mod tests {
 }
 
 fn main() {
+    if let Some(code) = cli::run(std::env::args_os()) { std::process::exit(code) }
     let spec = AppSpec::<App> {
         min_size: Some((720.0, 420.0)),
         fonts: FONTS,
