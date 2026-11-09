@@ -51,7 +51,7 @@ use serde_json::{Value, json};
 use super::framed::{Decoder, Kind, SendWindow, encode, parse_credit, parse_resize};
 
 /// Methods that change the core: logged.
-const MUTATING: [&str; 5] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach"];
+const MUTATING: [&str; 6] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach", "terminal.interrupt"];
 
 /// How often the fake sends a heartbeat (the core sends one every 15 s).
 const HEARTBEAT: Duration = Duration::from_secs(15);
@@ -637,6 +637,7 @@ impl Ctx {
                 Ok(json!({"seq": 0, "terminals": fx.terminals()}))
             }
             "terminal.send" => fx.send(Self::address(params)),
+            "terminal.interrupt" => fx.get(Self::address(params)).map(|_| json!({"outcome": "stopped", "key": "esc"})),
             m => Err(("unknown_method", format!("unknown method {m}"))),
         }
     }

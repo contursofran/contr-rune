@@ -9,15 +9,22 @@
 //! `agent/<address>` (with `glyph` = the state mark, its label the state, `subtitle` = the meta line
 //! and `detail` = the age inside),
 //! `term-<id>`, `server-this-mac`, `settings`.
+//!
+//! A secondary press on an agent row opens its menu (A1): Interrupt, Stop, Open PR. The kit names
+//! the parts `agent/<address>/menu-menu` and `agent/<address>/menu-item0..2` (Interrupt, Stop, Open
+//! PR; the items carry their label). The actions run off the UI thread; a failure shows in the
+//! error line.
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use rune::{Color, Cycle, El, FileDialogOptions, Icon, LoopSpec, el, icon, row, spacer, text};
+use rune::{Color, Cycle, El, FileDialogOptions, Icon, LoopSpec, PointerPress, el, icon, row, spacer, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
-use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
+use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, MenuItem, context_menu};
 
+use crate::github as gh;
 use crate::hc::model::{self, Agent, AgentState, Line};
+use crate::hc::{HcUpdate, watch};
 use crate::session::now_ms;
 use crate::theme;
 use crate::{App, PLUS, Project, Status, TERM, shell};
@@ -207,6 +214,96 @@ pub fn agent_glyph(k: &Kit, a: &Agent) -> El {
     }
 }
 
+/// The open agent menu (A1): the row it belongs to, where it opened, and whether that agent's
+/// branch has a pull request (`None` until `gh` answered).
+#[derive(Default)]
+pub struct AgentMenu {
+    open: Option<(String, PointerPress)>,
+    has_pr: Option<(String, bool)>,
+}
+
+/// What an agent action reports back to the UI thread.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentDone {
+    /// Whether the agent's branch has a pull request.
+    Pr { address: String, available: bool },
+    /// An action ended: Ok, or the text for the error line.
+    Action(Result<(), String>),
+}
+
+#[derive(Clone, Copy)]
+enum Action {
+    Interrupt,
+    Stop,
+    OpenPr,
+}
+
+impl App {
+    fn open_agent_menu(&mut self, address: String, at: PointerPress) {
+        let folder = self.agents.iter().find(|a| a.address == address).and_then(|a| a.folder.clone());
+        self.agent_menu = AgentMenu { open: Some((address.clone(), at)), has_pr: None };
+        let Some(folder) = folder else { return };
+        self.off_ui(move || AgentDone::Pr { address, available: gh::has_pr(&folder) });
+    }
+
+    fn agent_action(&mut self, address: String, action: Action) {
+        self.agent_menu.open = None;
+        let dialer = self.hc_dialer.clone();
+        let folder = self.agents.iter().find(|a| a.address == address).and_then(|a| a.folder.clone());
+        self.off_ui(move || {
+            let hc = |f: fn(&crate::hc::Dialer, &str) -> Result<(), String>| match &dialer {
+                Some(d) => f(d, &address),
+                None => Err("hc is off".to_owned()),
+            };
+            AgentDone::Action(match action {
+                Action::Interrupt => hc(watch::interrupt),
+                Action::Stop => hc(watch::stop),
+                Action::OpenPr => folder.ok_or_else(|| "the agent has no folder".to_owned()).and_then(|f| gh::open_pr(&f)),
+            })
+        });
+    }
+
+    /// Run `job` off the UI thread and deliver its result as an update. A headless run cannot wait
+    /// for a thread, so it runs at once.
+    fn off_ui(&mut self, job: impl FnOnce() -> AgentDone + Send + 'static) {
+        if rune::is_headless() {
+            self.agent_done(job());
+            return;
+        }
+        let (tx, waker) = (self.hc_tx.clone(), self.waker.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(HcUpdate::Agent(job()));
+            if let Some(w) = &waker {
+                w();
+            }
+        });
+    }
+
+    pub fn agent_done(&mut self, done: AgentDone) {
+        match done {
+            AgentDone::Pr { address, available } => self.agent_menu.has_pr = Some((address, available)),
+            AgentDone::Action(Err(e)) => self.error = Some(e),
+            AgentDone::Action(Ok(())) => {}
+        }
+    }
+}
+
+/// The open agent menu, mounted in `layer`.
+fn agent_menu(k: &Kit, s: &App, layer: &mut Vec<El>) {
+    let Some((address, at)) = s.agent_menu.open.clone() else { return };
+    let pr = s.agent_menu.has_pr.as_ref().is_some_and(|(a, ok)| *ok && *a == address);
+    let item = |label: &str, action: Action| {
+        let address = address.clone();
+        MenuItem::new(label).on_select(move |s: &mut App| s.agent_action(address.clone(), action))
+    };
+    context_menu(format!("agent/{address}/menu"), el(), Some(at))
+        .item(item("Interrupt", Action::Interrupt))
+        .item(item("Stop", Action::Stop).danger(true))
+        .item(item("Open PR", Action::OpenPr).disabled(!pr))
+        .on_close(|s: &mut App| s.agent_menu.open = None)
+        .build(k, layer);
+}
+
 fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
     let a = line.agent;
     let address = a.address.clone();
@@ -221,7 +318,11 @@ fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
         .selected(s.selected_agent.as_deref() == Some(a.address.as_str()))
         .on_select(move |s: &mut App, _tx| s.select_agent(address.clone()))
         .build(k)
-        .key(format!("agent/{}", a.address));
+        .key(format!("agent/{}", a.address))
+        .on_secondary_press({
+            let address = a.address.clone();
+            move |s: &mut App, at, _tx| s.open_agent_menu(address.clone(), at)
+        });
     // A row that needs you says why on hover.
     match &a.state {
         AgentState::NeedsYou { msg, .. } if !msg.trim().is_empty() => row.help(msg.clone()),
@@ -252,7 +353,8 @@ fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
     r.build(k).key(format!("term-{id}"))
 }
 
-pub fn view(k: &Kit, s: &App) -> El {
+pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
+    agent_menu(k, s, layer);
     let add_project = icon_button(&PLUS, "Open a folder")
         .on_press_tx(|_: &mut App, tx| {
             let options = FileDialogOptions { title: "Open a folder".into(), ..Default::default() };
