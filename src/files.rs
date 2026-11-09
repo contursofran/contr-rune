@@ -9,7 +9,7 @@ use std::process::Command;
 use rune::{Icon, El, col, row, spacer, text};
 use rune_kit::{ControlSize, FileNode, Progress, FileTree, IconButton, IconButtonVariant, Kit, State, TreeItem, TreeModel, TreeStyle, Tree};
 
-use crate::{App, label, shell, usage};
+use crate::{App, label, session_panel, shell, usage};
 use crate::theme::{FILE_ROW_HEIGHT, ROW_SMALL};
 use crate::diff::{self, ChangeKind, Changed, DiffSummary};
 
@@ -279,11 +279,10 @@ static FILTER: Icon = Icon {
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></g>"#,
 };
 
-/// The files card: the project name and the changed-only toggle, then the tree, then the selected
+/// The files card: "Files" and the changed-only toggle, then the session panel (C4), the tree, then the selected
 /// agent's context meter (H13) when it has a context file.
 pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
     let c = &k.c;
-    let name = s.projects.get(s.selected_project).map(|p| p.name.clone()).unwrap_or_default();
     let label_ = "Show changed files only";
     let toggle = IconButton::new(&FILTER)
         .variant(IconButtonVariant::GhostMuted)
@@ -301,7 +300,7 @@ pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
         .pl(10.0)
         .pr(2.0)
         .center_y()
-        .child(text(name).key("files/title").font(k.ty.small_medium).color(c.text_faint))
+        .child(text("Files").key("files/title").font(k.ty.small_medium).color(c.text_faint))
         .child(spacer())
         .child(toggle);
     let body = if s.changed_only && s.tree.visible_len() == 0 {
@@ -309,7 +308,11 @@ pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
     } else {
         file_tree(k, s)
     };
-    let panel = shell::files_panel(k).padding(10.0).child(head).child(body);
+    let mut panel = shell::files_panel(k).padding(10.0).child(head);
+    if let Some(session) = session_panel::view(k, s) {
+        panel = panel.child(session);
+    }
+    let panel = panel.child(body);
     match s.context.context.as_ref() {
         Some(ctx) => panel.child(context_meter(k, ctx)),
         None => panel,
