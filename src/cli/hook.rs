@@ -163,10 +163,10 @@ fn labels(input: &Value, transcript: &str, env: &Env) -> Vec<(&'static str, Stri
     if env.terminal_id.is_empty() {
         return labels;
     }
-    if !transcript.is_empty() {
-        if let Some(model) = turn::last_model(Path::new(transcript)).ok().flatten() {
-            labels.push(("contr.model", turn::short_model(&model)));
-        }
+    if !transcript.is_empty()
+        && let Some(model) = turn::last_model(Path::new(transcript)).ok().flatten()
+    {
+        labels.push(("contr.model", turn::short_model(&model)));
     }
     let effort = input["effort"]["level"].as_str().filter(|l| !l.is_empty()).unwrap_or(&env.effort);
     if !effort.is_empty() {
