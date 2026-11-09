@@ -32,6 +32,7 @@ mod split;
 mod terminal_view;
 mod theme;
 mod titlebar;
+mod usage;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -157,6 +158,8 @@ struct App {
     owner_state: OwnerState,
     owner_stamp: Option<std::time::SystemTime>,
     card: notch::Card,
+    /// Claude and Codex plan meters in the sidebar foot (H11).
+    plans: usage::Plans,
     /// The terminal text selection (T1).
     select: select::Select,
 }
@@ -238,6 +241,7 @@ fn init() -> App {
         owner_state: OwnerState::default(),
         owner_stamp: None,
         card: notch::Card::default(),
+        plans: usage::Plans::new(),
         select: select::Select::default(),
     };
     app.reload_owner(true);
@@ -689,6 +693,9 @@ fn grid_size(w: f32, h: f32) -> Size {
 
 fn setup(s: &mut App, waker: Waker) {
     s.waker = Some(waker.clone());
+    if rune::is_headless() {
+        s.plans.read_now();
+    }
     start_hc(s, waker.clone());
     // A headless run cannot wait for the watcher: take the first listing now.
     if rune::is_headless() && let Some(d) = s.hc_dialer.clone() {
@@ -793,6 +800,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
         changed |= s.reload_owner(false);
         tx.wake_after(OWNER_EVERY);
     }
+    changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
     let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited().load(Ordering::Acquire)).map(|t| t.session.id()).collect();
