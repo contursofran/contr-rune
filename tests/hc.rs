@@ -7,9 +7,9 @@ mod common;
 use common::*;
 use serde_json::json;
 
-/// The hc row of the settings scene.
+/// The hc row of the settings scene, on the Updates tab.
 fn hc_value(app: App) -> String {
-    let r = app.scene("settings").end(0.5).run();
+    let r = app.scene("settings").events(vec![tap(0.2, "settings-tabs/segment2")]).end(0.5).run();
     r.find("version/hc/value").expect("version/hc/value")["text"].as_str().unwrap().to_owned()
 }
 

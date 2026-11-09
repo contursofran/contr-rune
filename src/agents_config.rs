@@ -214,7 +214,6 @@ impl Config {
     /// Writes the config to `path` (tmp file, then rename). Keys of the file that this code does
     /// not know stay as they are. A profile goes to the file only when the file had it or when it
     /// differs from the default, so the file does not freeze today's defaults (D186).
-    #[allow(dead_code)] // used by C7/C8 (settings tabs)
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let fail = |e: &dyn std::fmt::Display| format!("agents: {}: {e}", path.display());
         let mut raw = match std::fs::read_to_string(path) {
@@ -258,7 +257,6 @@ impl Config {
     }
 }
 
-#[allow(dead_code)] // used by `save`
 fn value<T: Serialize>(v: &T) -> Value {
     serde_json::to_value(v).expect("plain data serialises")
 }
