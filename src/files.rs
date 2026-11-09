@@ -6,8 +6,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
-use rune_kit::{FileNode, FileTree, TreeModel};
+use rune::{Icon, El, col, row, spacer, text};
+use rune_kit::{ControlSize, FileNode, FileTree, IconButton, IconButtonVariant, Kit, State, TreeItem, TreeModel, TreeStyle, Tree};
 
+use crate::{App, label, shell};
+use crate::theme::{FILE_ROW_HEIGHT, ROW_SMALL};
 use crate::diff::{self, ChangeKind, Changed, DiffSummary};
 
 /// Outside a repo the walk stops after this many files.
@@ -266,4 +269,82 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(got, ["README.md", "src/main.rs"]);
     }
+}
+
+// The files card (view) ─────────────
+
+static FILTER: Icon = Icon {
+    name: "contr-filter",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></g>"#,
+};
+
+/// The files card: the project name and the changed-only toggle, then the tree. (The usage meters
+/// wait for agent data, part K7.)
+pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
+    let c = &k.c;
+    let name = s.projects.get(s.selected_project).map(|p| p.name.clone()).unwrap_or_default();
+    let label_ = "Show changed files only";
+    let toggle = IconButton::new(&FILTER)
+        .variant(IconButtonVariant::GhostMuted)
+        .control_size(ControlSize::Large)
+        .label(label_)
+        .help(label_)
+        .state(if s.changed_only { State::Pressed } else { State::Rest })
+        .on_press(|s: &mut App| s.toggle_changed_only())
+        .build(k)
+        .key("files-changed-only");
+    let head = row()
+        .key("files/head")
+        .w_full()
+        .h(28.0)
+        .pl(10.0)
+        .pr(2.0)
+        .center_y()
+        .child(text(name).key("files/title").font(k.ty.small_medium).color(c.text_faint))
+        .child(spacer())
+        .child(toggle);
+    let body = if s.changed_only && s.tree.visible_len() == 0 {
+        col().grow(1.0).min_h(0.0).w_full().pt(12.0).px(10.0).child(label("No changed files", k.ty.text_small, c.text_faint))
+    } else {
+        file_tree(k, s)
+    };
+    shell::files_panel(k).padding(10.0).child(head).child(body)
+}
+
+fn file_tree(k: &Kit, s: &App) -> El {
+    let c = &k.c;
+    let style = {
+        let mut st = TreeStyle::from_kit(k).label(ROW_SMALL, c.text_muted, c.text_strong).hover(c.hover);
+        st.row_height = FILE_ROW_HEIGHT;
+        st.indent = 21.0;
+        st
+    };
+    let (rest, strong, faint) = (c.text_muted, c.text_strong, c.text_faint);
+    let root = s.selected_path();
+    Tree::new(|s: &App| &s.tree, |s: &mut App| &mut s.tree, |n: &FileNode<Change>| n.name.as_str())
+        .name("Files")
+        .style(style)
+        .row(move |n, r| {
+            let item = TreeItem::file(n, r);
+            match n.data {
+                Some(Change { added, removed, kind }) => {
+                    let item = match kind {
+                        Kind::Modified | Kind::New => item.label_color(strong),
+                        Kind::Deleted => item.label_color(faint).icon_color(faint),
+                        Kind::Plain => item.label_color(rest),
+                    };
+                    if added + removed > 0 { item.changes(added, removed) } else { item }
+                }
+                None => item,
+            }
+        })
+        .on_open(move |_s: &mut App, id: &str, _tx| {
+            if let Some(root) = &root {
+                open_with_default_app(&root.join(id));
+            }
+        })
+        .build(s, k)
+        .grow(1.0)
+        .min_h(0.0)
 }
