@@ -23,6 +23,29 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "TodoWrite|TaskCreate|TaskUpdate|mcp__claude-artifacts__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$HC_TERMINAL_ID\" ] || contr-rune hook post-tool || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$HC_TERMINAL_ID\" ] || contr-rune hook prompt || true",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

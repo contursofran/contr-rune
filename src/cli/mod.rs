@@ -3,6 +3,7 @@
 
 mod agents;
 mod hook;
+mod hook_session;
 mod mcp;
 mod mcp_tools;
 mod owner;

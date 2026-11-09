@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{restore, turn};
+use super::{hook_session, restore, turn};
 use crate::agents;
 use crate::hc::conn::Conn;
 use crate::hc::owner::OwnerFile;
@@ -22,6 +22,8 @@ const USAGE: &str = "\
 Usage:
   contr-rune hook stop            the kit's Stop hook
   contr-rune hook session-start   the kit's SessionStart hook (matcher compact)
+  contr-rune hook post-tool       the kit's PostToolUse hook: saves the todos and artifacts
+  contr-rune hook prompt          the kit's UserPromptSubmit hook: asks for [you] todos
 
 Claude Code runs it and gives it the hook input on stdin.
 
@@ -38,6 +40,13 @@ compacts.
 session-start, after a compaction in a coordinator: prints the playbook, the state file to
 read, the live workers it started, its open owner items and the flow (contr-rune agents flow),
 which Claude Code adds to the new context.
+
+post-tool, in an hc terminal: TodoWrite, TaskCreate, TaskUpdate and claude-artifacts calls are
+saved in the session file (<state>/session/<id>.json) that the app shows. It always exits 0.
+
+prompt, in an hc terminal that is not a worker: asks Claude to add each owner request to its
+todo list with the text starting \"[you] \". Prompts from hc (<hc from=) are skipped. It always
+exits 0.
 ";
 
 /// The most characters of the worker's last words in a report.
@@ -71,10 +80,7 @@ pub fn run(args: &[String], env: &Env, stdin: impl Read + Send + 'static, out: &
     match args {
         [kind] if kind == "stop" => stop(env, stdin, out, err),
         [kind] if kind == "session-start" => session_start(env, stdin, out, err),
-        [kind] if ["post-tool", "prompt"].contains(&kind.as_str()) => {
-            let _ = writeln!(err, "contr-rune hook {kind}: not built yet");
-            1
-        }
+        [kind] if ["post-tool", "prompt"].contains(&kind.as_str()) => hook_session::run(kind, env, stdin, out, err),
         _ => {
             let _ = err.write_all(USAGE.as_bytes());
             1
@@ -232,7 +238,7 @@ fn session_start(env: &Env, stdin: impl Read + Send + 'static, out: &mut impl Wr
 
 /// One JSON value from `stdin`, within `INPUT_WAIT`. It reads one value, not to the end: a
 /// caller that keeps the pipe open must not hang the hook (Swift P21).
-fn read_input(stdin: impl Read + Send + 'static) -> Result<Value, String> {
+pub(super) fn read_input(stdin: impl Read + Send + 'static) -> Result<Value, String> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let value = serde_json::Deserializer::from_reader(stdin).into_iter::<Value>().next();
@@ -348,7 +354,7 @@ mod tests {
         assert!(String::from_utf8(err).unwrap().contains("bad hook input"));
         let outside = Env { coordinator: String::new(), terminal_id: String::new(), effort: String::new(), restore: restore::Env::default() };
         assert_eq!(run(&["stop".into()], &outside, &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
-        for args in [vec![], vec!["bogus".to_owned()], vec!["prompt".to_owned()]] {
+        for args in [vec![], vec!["bogus".to_owned()], vec!["prompt".to_owned(), "extra".to_owned()]] {
             assert_eq!(run(&args, &env, &b""[..], &mut Vec::new(), &mut Vec::new()), 1);
         }
     }
