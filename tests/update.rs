@@ -69,10 +69,10 @@ fn later_closes_the_popover_and_restart_now_closes_both() {
 
 #[test]
 fn settings_says_which_version_is_ready() {
-    let newer = run("newer.json", vec![tap(0.3, "settings")]);
+    let newer = run("newer.json", vec![tap(0.3, "settings"), tap(0.5, "settings-tabs/segment2")]);
     assert_eq!(newer.text_in("version/contr-rune", "version/contr-rune/value").unwrap(), format!("{} \u{b7} 9.9.9 available", env!("CARGO_PKG_VERSION")));
     assert!(newer.has("settings-check-updates"));
-    let current = run("current.json", vec![tap(0.3, "settings")]);
+    let current = run("current.json", vec![tap(0.3, "settings"), tap(0.5, "settings-tabs/segment2")]);
     assert_eq!(current.text_in("version/contr-rune", "version/contr-rune/value").unwrap(), format!("{} \u{b7} up to date", env!("CARGO_PKG_VERSION")));
 }
 
@@ -81,14 +81,14 @@ const TEST_KEY: &str = "d7fa0b684898d1703f79456a4923aac56a1e5af9f1928d77d337d581
 
 /// "Restart now" with the assets of `dir` (next to its `newer.json`), a dry run (no swap), then Settings.
 fn install(dir: &str) -> Run {
-    let events = vec![tap(0.3, "update-pill"), tap(0.6, "update-panel/restart"), tap(0.9, "settings")];
+    let events = vec![tap(0.3, "update-pill"), tap(0.6, "update-panel/restart"), tap(0.9, "settings"), tap(1.1, "settings-tabs/segment2")];
     App::new()
         .scene("update")
         .env("CONTR_UPDATE_URL", fixture(&format!("../{dir}/newer.json")))
         .env("CONTR_UPDATE_PUBKEY", TEST_KEY)
         .env("CONTR_UPDATE_DRY", "1")
         .events(events)
-        .end(1.5)
+        .end(1.8)
         .run()
 }
 

@@ -42,9 +42,12 @@ fn the_gear_opens_it_with_its_content() {
     assert_eq!(card[2], 520.0, "the card is 520 wide");
     assert_eq!(card[0] + card[2] / 2.0, 855.0, "centred in the window");
     assert!(card[1] < 200.0, "near the top");
-    for key in ["settings-esc", "appearance", "settings-done", "version/contr-rune", "version/hc"] {
+    for key in ["settings-esc", "settings-tabs", "appearance", "settings-done"] {
         assert!(t.has(key), "{key}");
     }
+    // The versions are on the Updates tab.
+    let t = run(vec![tap(0.3, "settings"), tap(0.6, "settings-tabs/segment2")]);
+    assert!(t.has("version/contr-rune") && t.has("version/hc"));
     let values = t.texts();
     assert!(values.iter().any(|v| v == env!("CARGO_PKG_VERSION")), "the crate version is shown");
     assert!(values.iter().any(|v| v == "not installed"), "hc is not installed");
@@ -72,21 +75,21 @@ fn light_repaints_the_app_with_the_light_kit_and_dark_brings_it_back() {
 
     assert_eq!(fill(start(), "terminal"), dark.c.bg_base.hex().as_str(), "System follows the (dark) headless system");
 
-    let t = run(vec![tap(0.3, "settings"), tap(0.6, "segment2")]);
+    let t = run(vec![tap(0.3, "settings"), tap(0.6, "appearance/segment2")]);
     for panel in ["sidebar", "terminal", "files"] {
         assert_eq!(fill(&t, panel), light.c.bg_base.hex().as_str(), "{panel} is light");
     }
     assert_eq!(fill(&t, "window"), light.c.bg_deep.hex().as_str());
     assert!(open(&t), "choosing does not close the dialog");
 
-    let back = run(vec![tap(0.3, "settings"), tap(0.6, "segment2"), tap(0.9, "segment1")]);
+    let back = run(vec![tap(0.3, "settings"), tap(0.6, "appearance/segment2"), tap(0.9, "appearance/segment1")]);
     assert_eq!(fill(&back, "terminal"), dark.c.bg_base.hex().as_str());
 }
 
 #[test]
 fn the_choice_is_written_and_read_back() {
     // The broken-file fallback is the unit test in `src/settings.rs`.
-    let first = App::new().scene("three-tabs").file("CONTR_SETTINGS", "settings.json", "").events(vec![tap(0.3, "settings"), tap(0.6, "segment2")]).end(2.0).run();
+    let first = App::new().scene("three-tabs").file("CONTR_SETTINGS", "settings.json", "").events(vec![tap(0.3, "settings"), tap(0.6, "appearance/segment2")]).end(2.0).run();
     let text = first.file("settings.json");
     assert!(text.contains("\"light\""), "{text}");
 
