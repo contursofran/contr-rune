@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn prompt_asks_for_you_todos_except_hc_prompts_workers_and_empty_prompts() {
         let ask = |terminal: &str, coordinator: &str, prompt: &str| {
-            let env = Env { coordinator: coordinator.into(), terminal_id: terminal.into(), effort: String::new(), restore: super::super::restore::Env::default() };
+            let env = Env { coordinator: coordinator.into(), terminal_id: terminal.into(), effort: String::new(), compact_window: String::new(), restore: super::super::restore::Env::default() };
             let input = json!({"prompt": prompt}).to_string();
             let (mut out, mut err) = (Vec::new(), Vec::new());
             assert_eq!(run("prompt", &env, std::io::Cursor::new(input.into_bytes()), &mut out, &mut err), 0);
