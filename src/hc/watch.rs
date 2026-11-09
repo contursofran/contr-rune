@@ -2,7 +2,8 @@
 //! with `events.subscribe` to notice when the core goes away. It reports the connection state to
 //! the UI over an mpsc channel and wakes the window. Reconnect: 0.5 s doubled to 5 s.
 //!
-//! H1 only keeps the state; applying the events to a terminal map comes with H5/H6.
+//! H1 keeps the state; H4 also forwards the events that matter to tabs (`restarted`, `finished`,
+//! `removed`); applying the rest to a terminal map comes with H5/H6.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
@@ -12,7 +13,7 @@ use serde_json::json;
 
 use super::conn::{Conn, Note};
 use super::dial::{Dialer, Keep};
-use super::wire::{HelloResult, ServerStatus, Snapshot};
+use super::wire::{Event, HelloResult, ServerStatus, Snapshot, Terminal};
 
 const CALL: Duration = Duration::from_secs(10);
 /// The core sends a heartbeat every 15 s; three missed ones mean the line is dead.
@@ -54,10 +55,40 @@ impl HcStatus {
     }
 }
 
-/// Messages from the watcher to the UI thread.
+/// The events a tab reacts to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermEvent {
+    /// The terminal got a new shell: attach again.
+    Restarted,
+    /// The program ended (the tab closes).
+    Finished,
+    /// The record is gone (the tab closes).
+    Removed,
+}
+
+/// Messages from the background threads to the UI thread.
 #[derive(Clone, Debug, PartialEq)]
 pub enum HcUpdate {
     Status(HcStatus),
+    /// An event for one terminal.
+    Event { terminal: String, kind: TermEvent },
+    /// The launch listing of this app's tabs (`restore::list`).
+    Restore(Result<Vec<Terminal>, String>),
+}
+
+/// The update a notification makes, if any.
+fn to_update(note: &Note) -> Option<HcUpdate> {
+    if note.method != "event" {
+        return None;
+    }
+    let ev: Event = serde_json::from_value(note.params.clone()).ok()?;
+    let kind = match ev.kind.as_str() {
+        "restarted" => TermEvent::Restarted,
+        "finished" => TermEvent::Finished,
+        "removed" => TermEvent::Removed,
+        _ => return None,
+    };
+    Some(HcUpdate::Event { terminal: ev.terminal?, kind })
 }
 
 /// A line to the core with its plain connection.
@@ -115,21 +146,31 @@ pub fn probe(d: &Dialer) -> HcStatus {
 
 /// Start the watcher thread.
 pub fn spawn(d: Dialer, tx: Sender<HcUpdate>, wake: Waker) {
-    let publish = move |s: HcStatus| {
-        let ok = tx.send(HcUpdate::Status(s)).is_ok();
+    spawn_with(d, tx, wake, true);
+}
+
+/// The watcher for a headless run: it forwards events but leaves the status to `probe`.
+pub fn spawn_events(d: Dialer, tx: Sender<HcUpdate>, wake: Waker) {
+    spawn_with(d, tx, wake, false);
+}
+
+fn spawn_with(d: Dialer, tx: Sender<HcUpdate>, wake: Waker, report: bool) {
+    let send = move |u: HcUpdate| {
+        let ok = tx.send(u).is_ok();
         wake();
         ok
     };
-    let _ = std::thread::Builder::new().name("hc-watch".into()).spawn(move || run(&d, &publish));
+    let _ = std::thread::Builder::new().name("hc-watch".into()).spawn(move || run(&d, &send, report));
 }
 
-fn run(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool) {
+fn run(d: &Dialer, send: &dyn Fn(HcUpdate) -> bool, report: bool) {
+    let publish = |s: HcStatus| !report || send(HcUpdate::Status(s));
     let mut backoff = BACKOFF_FIRST;
     loop {
         if !publish(HcStatus::Connecting) {
             return;
         }
-        let (was_connected, why) = hold(d, publish);
+        let (was_connected, why) = hold(d, &publish, send);
         if was_connected {
             backoff = BACKOFF_FIRST;
             if !publish(HcStatus::Connecting) {
@@ -147,7 +188,7 @@ fn run(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool) {
 
 /// Connect, publish `Connected`, and stay until the line is lost. Returns whether it connected,
 /// and why it ended.
-fn hold(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool) -> (bool, String) {
+fn hold(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool, send: &dyn Fn(HcUpdate) -> bool) -> (bool, String) {
     let (_main, version) = match check(d) {
         Ok(ok) => ok,
         Err(e) => return (false, e),
@@ -161,7 +202,7 @@ fn hold(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool) -> (bool, String) {
     if !publish(HcStatus::Connected { version }) {
         return (true, String::new());
     }
-    wait_for_loss(&note_rx);
+    forward_until_loss(&note_rx, send);
     drop(events);
     (true, "connection lost".to_owned())
 }
@@ -174,9 +215,15 @@ fn subscribe(d: &Dialer, notes: Sender<Note>) -> Result<Opened, String> {
     Ok(o)
 }
 
-/// Block until the events line ends or goes silent.
-fn wait_for_loss(rx: &Receiver<Note>) {
-    while rx.recv_timeout(SILENCE).is_ok() {}
+/// Forward the events tabs care about until the events line ends or goes silent.
+fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool) {
+    while let Ok(note) = rx.recv_timeout(SILENCE) {
+        if let Some(u) = to_update(&note)
+            && !send(u)
+        {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +294,26 @@ mod tests {
         let second = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(second, HcUpdate::Status(HcStatus::Connected { version: "0.1.19".into() }));
         assert!(woke.load(Ordering::Relaxed) >= 2, "the window is woken per update");
+    }
+
+    #[test]
+    fn only_tab_events_are_forwarded() {
+        let note = |ty: &str, terminal: Option<&str>| Note { method: "event".into(), params: json!({"seq": 1, "type": ty, "terminal": terminal, "data": {}}) };
+        assert_eq!(to_update(&note("restarted", Some("t7"))), Some(HcUpdate::Event { terminal: "t7".into(), kind: TermEvent::Restarted }));
+        assert_eq!(to_update(&note("finished", Some("t7"))), Some(HcUpdate::Event { terminal: "t7".into(), kind: TermEvent::Finished }));
+        assert_eq!(to_update(&note("removed", Some("t8"))), Some(HcUpdate::Event { terminal: "t8".into(), kind: TermEvent::Removed }));
+        assert_eq!(to_update(&note("status", Some("t7"))), None);
+        assert_eq!(to_update(&note("doc", None)), None);
+        assert_eq!(to_update(&note("finished", None)), None);
+        assert_eq!(to_update(&Note { method: "heartbeat".into(), params: json!({"seq": 2}) }), None);
+    }
+
+    #[test]
+    fn the_headless_watcher_forwards_fixture_events_without_status() {
+        let ev = json!({"after_ms": 50, "method": "event", "params": {"seq": 1, "type": "finished", "terminal": "t3", "data": {"reason": "exited"}}});
+        let (tx, rx) = channel();
+        spawn_events(fake(json!({"events": [ev]})), tx, Arc::new(|| {}));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HcUpdate::Event { terminal: "t3".into(), kind: TermEvent::Finished });
     }
 
     #[test]

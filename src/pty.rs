@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use alacritty_terminal::term::Term;
 
 use crate::hc::term::HcSession;
+use crate::hc::watch::TermEvent;
 use crate::session::{Events, Session, Size};
 
 pub enum Pty {
@@ -89,6 +90,27 @@ impl Pty {
         match self {
             Pty::Local(s) => s.subtitle(),
             Pty::Hc(s) => s.subtitle(),
+        }
+    }
+
+    /// An hc tab is attaching again after a lost line (its pane shows "reconnecting").
+    pub fn detached(&self) -> bool {
+        matches!(self, Pty::Hc(s) if s.detached())
+    }
+
+    /// The pane gained or lost the keyboard focus (an hc terminal gets a FOCUS frame).
+    pub fn set_focus(&self, gained: bool) {
+        if let Pty::Hc(s) = self {
+            s.set_focus(gained);
+        }
+    }
+
+    /// An event from the core for this tab's terminal (hc tabs only).
+    pub fn hc_event(&self, address: &str, kind: TermEvent) {
+        if let Pty::Hc(s) = self
+            && s.address().as_deref() == Some(address)
+        {
+            s.event(kind);
         }
     }
 

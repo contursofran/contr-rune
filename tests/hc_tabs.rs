@@ -153,7 +153,7 @@ fn a_split_pane_resize_goes_out_as_resize() {
 fn closing_a_tab_sends_kill_then_rm() {
     let r = run(Some("tabs.json"), None, vec![chord(2.0, "t"), chord(3.0, "w")]);
     assert_eq!(r.tabs(), vec!["t-1"]);
-    let order: Vec<(&str, &str)> = r.log.iter().filter_map(|l| Some((l["method"].as_str()?, l["params"]["terminal"].as_str().unwrap_or("")))).filter(|(m, _)| *m != "terminal.run").collect();
+    let order: Vec<(&str, &str)> = r.log.iter().filter_map(|l| Some((l["method"].as_str()?, l["params"]["terminal"].as_str().unwrap_or("")))).filter(|(m, _)| *m != "terminal.run" && *m != "terminal.attach").collect();
     assert_eq!(order, vec![("terminal.kill", "t2"), ("terminal.rm", "t2")]);
 }
 
