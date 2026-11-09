@@ -24,6 +24,7 @@ mod sidebar;
 mod split;
 mod theme;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -38,6 +39,7 @@ use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use find::Find;
 use hc::term::{HcSession, Spec as HcSpec};
+use hc::model::{self, Agent};
 use hc::restore;
 use hc::{Dialer, HcStatus, HcUpdate};
 use pty::Pty;
@@ -121,6 +123,14 @@ struct App {
     hc_dialer: Option<Dialer>,
     /// The tab whose terminal was last told it has the keyboard focus (FOCUS frames).
     focus_sent: Option<u64>,
+    /// Every terminal hc has and when each last had an event (from the watcher), the agents derived
+    /// from them (`refresh_agents`) and the minute those ages were computed in.
+    hc_terminals: Vec<hc::wire::Terminal>,
+    hc_stamps: HashMap<String, u64>,
+    agents: Vec<Agent>,
+    agents_minute: u64,
+    /// The agent row that is selected (its address). Showing its terminal comes in H8.
+    selected_agent: Option<String>,
 }
 
 fn init() -> App {
@@ -184,6 +194,11 @@ fn init() -> App {
         hc_rx,
         hc_dialer,
         focus_sent: None,
+        hc_terminals: Vec::new(),
+        hc_stamps: HashMap::new(),
+        agents: Vec::new(),
+        agents_minute: 0,
+        selected_agent: None,
         find: Find::new(),
     }
 }
@@ -218,7 +233,7 @@ impl App {
     fn restore_tabs(&mut self, listed: Result<Vec<hc::wire::Terminal>, String>) {
         let Some(dialer) = self.hc_dialer.clone() else { return };
         let terminals = listed.unwrap_or_default();
-        let same = |a: &Path, b: &Path| a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y);
+        let same = same_path;
         let items = {
             let known: Vec<restore::Known> = self.projects.iter().map(|p| restore::Known { name: &p.name, path: &p.path }).collect();
             restore::plan(&terminals, &known, &same, &|p| p.is_dir())
@@ -243,6 +258,7 @@ impl App {
             self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)) });
             opened.push((id, project));
         }
+        self.refresh_agents();
         // The first tab of the selected project shows; else the first one.
         match opened.iter().find(|(_, p)| *p == self.selected_project).or(opened.first()) {
             Some((id, _)) => self.select_tab(*id),
@@ -277,11 +293,51 @@ impl App {
                 self.projects.len() - 1
             }
         };
+        self.refresh_agents();
         self.select_project(i);
+    }
+
+    /// Take the terminal list from the watcher and derive the agents again.
+    fn set_terminals(&mut self, terminals: Vec<hc::wire::Terminal>, stamps: HashMap<String, u64>) {
+        self.hc_terminals = terminals;
+        self.hc_stamps = stamps;
+        self.refresh_agents();
+    }
+
+    /// Derive the agents from the terminal list. An agent whose project is not open opens it when
+    /// its folder exists (as H4 does for tabs); one whose folder is gone is not shown.
+    fn refresh_agents(&mut self) {
+        let now = now_ms();
+        for _ in 0..2 {
+            let agents = {
+                let known: Vec<restore::Known> = self.projects.iter().map(|p| restore::Known { name: &p.name, path: &p.path }).collect();
+                model::derive(&self.hc_terminals, &self.hc_stamps, &known, &within_path, now)
+            };
+            let mut added = false;
+            for a in agents.iter().filter(|a| a.project.is_none() && a.state != model::AgentState::Ended) {
+                let Some(path) = a.folder.clone().filter(|f| f.is_dir()) else { continue };
+                if self.projects.iter().any(|p| same_path(&p.path, &path)) { continue; }
+                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None });
+                added = true;
+            }
+            self.agents = agents;
+            if !added { break; }
+        }
+        self.agents_minute = now / 60_000;
+        if self.selected_agent.as_ref().is_some_and(|a| !self.agents.iter().any(|x| &x.address == a)) {
+            self.selected_agent = None;
+        }
+    }
+
+    fn select_agent(&mut self, address: String) {
+        if self.agents.iter().any(|a| a.address == address) {
+            self.selected_agent = Some(address);
+        }
     }
 
     fn select_tab(&mut self, id: u64) {
         let Some(project) = self.tabs.iter().find(|t| t.session.id() == id).map(|t| t.project) else { return };
+        self.selected_agent = None;
         // A split belongs to one project: a tab of another project takes the whole panel.
         if self.split.as_ref().is_some_and(|sp| sp.project != project) { self.split = None; }
         // In a split the tab goes to the focused pane, or, when the other pane shows it, focus moves there.
@@ -301,6 +357,7 @@ impl App {
     }
 
     fn select_project(&mut self, project: usize) {
+        self.selected_agent = None;
         self.selected_project = project;
         let last = self.projects[project].last_tab.filter(|id| self.tabs.iter().any(|t| t.session.id() == *id));
         match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id())) {
@@ -546,6 +603,16 @@ impl App {
 }
 
 /// Columns and rows that fit the laid-out grid area (already inside the panel padding).
+/// Whether two folders are the same one (symlinks resolved).
+fn same_path(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Whether `folder` is `project` or inside it.
+fn within_path(project: &Path, folder: &Path) -> bool {
+    folder.starts_with(project) || matches!((project.canonicalize(), folder.canonicalize()), (Ok(p), Ok(f)) if f.starts_with(&p))
+}
+
 fn grid_size(w: f32, h: f32) -> Size {
     Size { cols: ((w / CELL_W).floor() as u16).max(2), rows: ((h / LINE_H).floor() as u16).max(1) }
 }
@@ -555,6 +622,12 @@ fn grid_size(w: f32, h: f32) -> Size {
 fn setup(s: &mut App, waker: Waker) {
     s.waker = Some(waker.clone());
     start_hc(s, waker.clone());
+    // A headless run cannot wait for the watcher: take the first listing now.
+    if rune::is_headless() && let Some(d) = s.hc_dialer.clone() {
+        if let Ok(list) = hc::watch::list_all(&d) {
+            s.set_terminals(list, HashMap::new());
+        }
+    }
     if s.tabs.is_empty() && !s.projects.is_empty() {
         match s.hc_dialer.clone() {
             // With hc the tabs of the last run come back; the listing decides whether a new one opens.
@@ -614,8 +687,17 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
                 }
             }
             HcUpdate::Restore(listed) => s.restore_tabs(listed),
+            HcUpdate::Terminals { terminals, stamps } => s.set_terminals(terminals, stamps),
         }
         changed = true;
+    }
+    // Agent ages show minutes: derive again when the minute turns, and look again then.
+    if !s.agents.is_empty() {
+        if now_ms() / 60_000 != s.agents_minute {
+            s.refresh_agents();
+            changed = true;
+        }
+        tx.wake_after(Duration::from_secs(30));
     }
     changed |= hc_fallbacks(s);
     s.sync_focus();
@@ -1173,6 +1255,10 @@ fn main() {
                 s.open_tab(0);
                 s.open_tab(0);
                 s.open_tab(0);
+                s.refresh_diff_now();
+            }),
+            // The agents of the fake core's fixture under their projects (`CONTR_HC_FAKE`).
+            ("agents", |s| {
                 s.refresh_diff_now();
             }),
             // The settings dialog open, in dark.
