@@ -60,6 +60,10 @@ pub struct Env {
     pub kit: Option<OsString>,
     pub home: Option<PathBuf>,
     pub terminal_id: String,
+    /// `owner.json`, for the owner tools of `mcp`.
+    pub owner_file: Option<PathBuf>,
+    /// The project the owner tools write for.
+    pub project: String,
 }
 
 impl Env {
@@ -70,6 +74,8 @@ impl Env {
             kit: var("CONTR_KIT"),
             home: var("HOME").map(PathBuf::from),
             terminal_id: var("HC_TERMINAL_ID").map(|v| v.to_string_lossy().into_owned()).unwrap_or_default(),
+            owner_file: paths::owner_file(),
+            project: super::owner::project_name(),
         }
     }
 }
@@ -432,7 +438,7 @@ mod tests {
     }
 
     fn call(args: &str, config: Option<PathBuf>) -> (i32, String, String) {
-        let env = Env { config_path: config, kit: None, home: None, terminal_id: String::new() };
+        let env = Env { config_path: config, kit: None, home: None, terminal_id: String::new(), owner_file: None, project: String::new() };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(&words(args), &env, &mut out, &mut err);
         (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
