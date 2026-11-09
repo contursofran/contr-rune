@@ -133,7 +133,7 @@ struct Manual {
 }
 
 /// How long after the last activity the fake still counts as busy.
-const SETTLE: Duration = Duration::from_millis(10);
+const SETTLE: Duration = Duration::from_millis(40);
 
 /// What `terminal.run/kill/rm` change; shared by every connection to the fixture.
 struct Core {
