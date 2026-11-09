@@ -661,9 +661,10 @@ impl Ctx {
             "terminal.attach" => self.attach(params),
             "events.subscribe" => {
                 fx.core.lock().unwrap().subscribers.push(Arc::downgrade(self));
-                let (events, me) = (fx.timed_events(), self.clone());
+                // The base is the subscribe time, taken here and not on the new thread: a thread that starts late
+                // would read a clock that has already moved and send every event late.
+                let (events, me, base) = (fx.timed_events(), self.clone(), fx.now_ms());
                 let _ = std::thread::Builder::new().name("hc-fake-events".into()).spawn(move || {
-                    let base = me.fx.now_ms();
                     for (t, ev) in events {
                         me.fx.wait_until(base + t);
                         if ev["method"] == "fake" {
