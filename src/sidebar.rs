@@ -35,7 +35,7 @@ use crate::hc::{HcUpdate, watch};
 use crate::orchestrator;
 use crate::session::now_ms;
 use crate::theme;
-use crate::{App, PLUS, Project, Status, TERM, shell};
+use crate::{App, PLUS, Project, Status, TERM, projects_modal, shell};
 
 // Icons from main.html (16 point view box), as in `examples/kit_preview.rs`.
 static GEAR: Icon = Icon {
@@ -243,7 +243,7 @@ pub struct AgentMenu {
     open: Option<(String, PointerPress)>,
     has_pr: Option<(String, bool)>,
     add_open: bool,
-    project: Option<(usize, PointerPress)>,
+    pub project: Option<(usize, PointerPress)>,
 }
 
 /// What an agent action reports back to the UI thread.
@@ -335,7 +335,7 @@ fn agent_menu(k: &Kit, s: &App, layer: &mut Vec<El>) {
 }
 
 /// The folder picker of the Projects `+` menu; `then` gets the folder.
-fn pick_folder(tx: &mut rune::Tx, title: &str, then: fn(&mut App, PathBuf)) {
+pub fn pick_folder(tx: &mut rune::Tx, title: &str, then: fn(&mut App, PathBuf)) {
     let options = FileDialogOptions { title: title.into(), ..Default::default() };
     tx.open_folder(options, move |s: &mut App, result, _| match result {
         Ok(Some(path)) => then(s, path),
@@ -446,11 +446,16 @@ pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
             s.agent_menu.add_open = false;
             pick_folder(tx, "Open a folder", App::add_project);
         }))
+        .item(MenuItem::new("Open projects…").on_select(|s: &mut App| {
+            s.agent_menu.add_open = false;
+            s.open_projects_modal();
+        }))
         .on_close(|s: &mut App| s.agent_menu.add_open = false)
         .build(k, layer);
     let mut list = Sidebar::new().label("Projects").inset(0.0).row_gap(2.0).header(section_head(k, "Projects", Some(add_project)));
-    for (i, p) in s.projects.iter().enumerate() {
-        if i > 0 {
+    for (n, i) in projects_modal::sidebar_order(s).into_iter().enumerate() {
+        let p = &s.projects[i];
+        if n > 0 {
             list = list.child(el().h(10.0));
         }
         list = list.child(project_row(k, s, i, p));

@@ -27,6 +27,7 @@ mod orchestrator;
 mod outline;
 mod paths;
 mod projects;
+mod projects_modal;
 mod prompt;
 mod pty;
 mod select;
@@ -87,6 +88,8 @@ struct Project {
     path: PathBuf,
     /// The tab to show when the project is selected again.
     last_tab: Option<u64>,
+    /// Taken off the sidebar in the projects modal (C6); its terminals keep running.
+    hidden: bool,
     /// The worker whose tab shows in the project's set (T4): the last one selected. A plain tab keeps
     /// it; a Claude session's tab drops it.
     last_worker: Option<String>,
@@ -193,12 +196,17 @@ struct App {
     update: update::Updater,
     /// The orchestrator outline (H10).
     outline: outline::State,
+    /// The projects modal (C6) and the recent list it shows.
+    pm: projects_modal::State,
+    recent: Vec<projects::Recent>,
 }
 
 fn init() -> App {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
     // `CONTR_PROJECTS` wins; else the saved projects (C5); else the folder we started in and home.
     let mut saved_selected = None;
+    let mut hidden_paths = Vec::new();
+    let mut recent = Vec::new();
     let paths: Vec<PathBuf> = match std::env::var("CONTR_PROJECTS").ok().filter(|l| !l.is_empty()) {
         Some(list) => list
             .split(':')
@@ -209,6 +217,8 @@ fn init() -> App {
         None => match projects::load() {
             Some(saved) => {
                 saved_selected = saved.selected;
+                hidden_paths = saved.hidden;
+                recent = saved.recent;
                 saved.open
             }
             None => {
@@ -218,12 +228,17 @@ fn init() -> App {
         },
     };
     let selected_project = saved_selected.and_then(|s| paths.iter().position(|p| *p == s)).unwrap_or(0);
+    let hidden_paths = hidden_paths.into_iter().filter(|h| !paths.contains(h));
     let projects = paths
-        .into_iter()
-        .map(|path| Project {
+        .iter()
+        .cloned()
+        .map(|path| (path, false))
+        .chain(hidden_paths.map(|path| (path, true)))
+        .map(|(path, hidden)| Project {
             name: sidebar::folder_name(&path),
             path,
             last_tab: None, last_worker: None,
+            hidden,
         })
         .collect();
     let (diff_tx, diff_rx) = channel();
@@ -293,6 +308,8 @@ fn init() -> App {
         select: select::Select::default(),
         update: update::Updater::new(),
         outline: outline::State::default(),
+        pm: projects_modal::State::default(),
+        recent,
     };
     app.reload_owner(true);
     app
@@ -341,7 +358,7 @@ impl App {
                 restore::Target::Folder(path) => match self.projects.iter().position(|p| same(&p.path, &path)) {
                     Some(i) => i,
                     None => {
-                        self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, last_worker: None });
+                        self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false, last_worker: None });
                         self.projects.len() - 1
                     }
                 },
@@ -382,9 +399,12 @@ impl App {
     fn add_project(&mut self, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
         let i = match self.projects.iter().position(|p| p.path == path) {
-            Some(i) => i,
+            Some(i) => {
+                self.projects[i].hidden = false;
+                i
+            }
             None => {
-                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, last_worker: None });
+                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false, last_worker: None });
                 self.projects.len() - 1
             }
         };
@@ -413,7 +433,7 @@ impl App {
             for a in agents.iter().filter(|a| a.project.is_none() && a.state != model::AgentState::Ended) {
                 let Some(path) = a.folder.clone().filter(|f| f.is_dir()) else { continue };
                 if self.projects.iter().any(|p| same_path(&p.path, &path)) { continue; }
-                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, last_worker: None });
+                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false, last_worker: None });
                 added = true;
             }
             self.agents = agents;
@@ -555,8 +575,14 @@ impl App {
 
     /// Keep the open projects and the selected one in the projects file (C5).
     fn save_projects(&mut self) {
-        let open: Vec<&Path> = self.projects.iter().map(|p| p.path.as_path()).collect();
-        if let Err(e) = projects::save(&open, self.projects.get(self.selected_project).map(|p| p.path.as_path())) {
+        let paths = |hidden| self.projects.iter().filter(move |p| p.hidden == hidden).map(|p| p.path.clone()).collect();
+        let saved = projects::Saved {
+            open: paths(false),
+            selected: self.projects.get(self.selected_project).map(|p| p.path.clone()),
+            hidden: paths(true),
+            recent: self.recent.clone(),
+        };
+        if let Err(e) = projects::save(&saved) {
             self.error = Some(format!("couldn't save the projects: {e}"));
         }
     }
@@ -1088,8 +1114,8 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::PageDown if ev.mods.shift => { scroll_active(s, -(s.pane_size[s.focus_idx()].rows as i32 - 1)); return true; }
         _ => {}
     }
-    // While the bar's input has the focus, typing belongs to it.
-    if s.find.open && s.find.edit.focused { return false; }
+    // While the bar's or the projects modal's input has the focus, typing belongs to it.
+    if s.find.open && s.find.edit.focused || s.pm.open { return false; }
     let Some(t) = s.active_tab() else { return false };
     let mode = *t.session.term().lock().unwrap().mode();
     match keys::bytes(ev, mode) {
@@ -1115,6 +1141,9 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let bar = title_bar(k, s, cx, &mut layer);
     if s.settings_open {
         dialog::build(k, s, &mut layer);
+    }
+    if s.pm.open {
+        projects_modal::build(k, s, &mut layer);
     }
     notch::card(k, s, &mut layer);
     update::overlays(k, s, &mut layer);
@@ -1193,6 +1222,13 @@ fn main() {
             ("settings", |s| {
                 s.appearance = Appearance::Dark;
                 s.settings_open = true;
+                s.open_tab(0);
+                s.refresh_diff_now();
+            }),
+            // The projects modal open, in dark.
+            ("projects", |s| {
+                s.appearance = Appearance::Dark;
+                s.open_projects_modal();
                 s.open_tab(0);
                 s.refresh_diff_now();
             }),
