@@ -189,7 +189,7 @@ fn spec_of(p: &Parsed, terminal_id: &str) -> Result<Spec, String> {
 }
 
 /// A line to the core. The child process of `hc connect` lives as long as the `Keep`.
-fn connect() -> Result<(Conn, Keep), String> {
+pub(super) fn connect() -> Result<(Conn, Keep), String> {
     let dialer = Dialer::from_env(false).map_err(|s| match s {
         HcStatus::Off => "hc is off (CONTR_HC=off)".to_owned(),
         HcStatus::NotInstalled => "hc is not installed (set CONTR_HC to its path)".to_owned(),

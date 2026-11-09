@@ -41,6 +41,18 @@ pub fn agents_config_in(env: Env) -> Option<PathBuf> {
     }
 }
 
+/// `CONTR_OWNER_FILE`, else `~/Library/Application Support/contr/owner.json`.
+pub fn owner_file() -> Option<PathBuf> {
+    owner_file_in(&real_env)
+}
+
+pub fn owner_file_in(env: Env) -> Option<PathBuf> {
+    match env("CONTR_OWNER_FILE") {
+        Some(path) => Some(PathBuf::from(path)),
+        None => Some(default_dir(env)?.join("owner.json")),
+    }
+}
+
 /// Every character outside `[A-Za-z0-9_-]` becomes `_`, so an id is safe as a file name.
 #[allow(dead_code)] // used by D7 (session file) and D10 (context file)
 pub fn sanitize_id(id: &str) -> String {
@@ -89,6 +101,10 @@ mod tests {
         let only_state = [("HOME", "/h"), ("CONTR_STATE_DIR", "/s")];
         assert_eq!(agents_config_in(&env(&only_state)), Some("/h/Library/Application Support/contr/agents.json".into()));
         assert_eq!(state_dir_in(&env(&[])), None);
+        assert_eq!(owner_file_in(&env(&home)), Some("/h/Library/Application Support/contr/owner.json".into()));
+        let owner = [("HOME", "/h"), ("CONTR_STATE_DIR", "/s"), ("CONTR_OWNER_FILE", "/o.json")];
+        assert_eq!(owner_file_in(&env(&owner)), Some("/o.json".into()));
+        assert_eq!(owner_file_in(&env(&only_state)), Some("/h/Library/Application Support/contr/owner.json".into()));
     }
 
     #[test]
