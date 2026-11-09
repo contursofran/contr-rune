@@ -82,6 +82,8 @@ pub enum HcUpdate {
     Terminals { terminals: Vec<Terminal>, stamps: HashMap<String, u64> },
     /// The outcome of telling a coordinator terminal about the owner's answer (`send_text`).
     Told(Result<(), String>),
+    /// The outcome of an agent row action (A1).
+    Agent(crate::sidebar::AgentDone),
 }
 
 /// The update a notification makes, if any.
@@ -299,6 +301,27 @@ pub fn send_text(d: &Dialer, terminal: &str, text: &str) -> Result<(), String> {
     let conn = Conn::new(link.reader, link.writer, None);
     handshake(&conn, false)?;
     conn.call("terminal.send", json!({"terminal": terminal, "text": text}), CALL).map_err(|e| e.to_string())?;
+    drop(link.keep);
+    Ok(())
+}
+
+/// `terminal.interrupt` on `terminal`, on a short-lived connection.
+pub fn interrupt(d: &Dialer, terminal: &str) -> Result<(), String> {
+    run_calls(d, &[("terminal.interrupt", terminal)])
+}
+
+/// `terminal.kill` then `terminal.rm` on `terminal`, on a short-lived connection.
+pub fn stop(d: &Dialer, terminal: &str) -> Result<(), String> {
+    run_calls(d, &[("terminal.kill", terminal), ("terminal.rm", terminal)])
+}
+
+fn run_calls(d: &Dialer, calls: &[(&str, &str)]) -> Result<(), String> {
+    let link = d.dial().map_err(|e| e.to_string())?;
+    let conn = Conn::new(link.reader, link.writer, None);
+    handshake(&conn, false)?;
+    for (method, terminal) in calls {
+        conn.call(method, json!({"terminal": terminal}), CALL).map_err(|e| e.to_string())?;
+    }
     drop(link.keep);
     Ok(())
 }

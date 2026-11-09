@@ -15,6 +15,7 @@ mod dialog;
 mod diff;
 mod files;
 mod find;
+mod github;
 mod grid;
 mod hc;
 mod keys;
@@ -147,6 +148,7 @@ struct App {
     agents_minute: u64,
     /// The agent row that is selected (its address). Showing its terminal comes in H8.
     selected_agent: Option<String>,
+    agent_menu: sidebar::AgentMenu,
     /// The owner's questions and to-dos (`owner.json`, shared with Go contr), what was last read from
     /// it, when that file was last changed, and the card that shows them (H9).
     owner: Option<Arc<dyn OwnerSource>>,
@@ -226,6 +228,7 @@ fn init() -> App {
         agents: Vec::new(),
         agents_minute: 0,
         selected_agent: None,
+        agent_menu: Default::default(),
         find: Find::new(),
         owner,
         owner_state: OwnerState::default(),
@@ -766,6 +769,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
             HcUpdate::Restore(listed) => s.restore_tabs(listed),
             HcUpdate::Terminals { terminals, stamps } => s.set_terminals(terminals, stamps),
             HcUpdate::Told(result) => s.told(result),
+            HcUpdate::Agent(done) => s.agent_done(done),
         }
         changed = true;
     }
@@ -937,7 +941,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         dialog::build(k, s, &mut layer);
     }
     notch::card(k, s, &mut layer);
-    shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
+    shell::window(k, bar, sidebar::view(k, s, &mut layer), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| {
             s.focused = focused;
             // Coming back: the file may have changed meanwhile.
