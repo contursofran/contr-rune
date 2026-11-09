@@ -2,10 +2,12 @@
 //! opens a window. Exit codes: 0 ok, 1 error, 2 usage (PARITY-PLAN K4).
 
 mod agents;
+mod hook;
 mod mcp;
 mod mcp_tools;
 mod owner;
 mod statusline;
+mod turn;
 
 use std::ffi::OsString;
 
@@ -23,7 +25,7 @@ commands:
 With no command, contr-rune opens the app.";
 
 /// The commands that are still stubs; each part replaces its entry.
-const STUBS: [&str; 1] = ["hook"];
+const STUBS: [&str; 0] = [];
 
 /// Runs a CLI call and returns its exit code, or `None` when the arguments are not a CLI call
 /// (no argument, or the app's own `--` flags): then the app starts.
@@ -42,6 +44,7 @@ fn dispatch(args: &[String], out: &mut impl std::io::Write, err: &mut impl std::
     match args[0].as_str() {
         "agents" => agents::run(&args[1..], &agents::Env::real(), out, err),
         "owner" => owner::run(&args[1..], &owner::Env::real(), out, err),
+        "hook" => hook::run(&args[1..], &hook::Env::real(), std::io::stdin(), err),
         "mcp" => mcp_tools::run(std::io::stdin().lock(), out, err),
         "statusline" => statusline::run(&args[1..], &statusline::Env::real(), std::io::stdin().lock(), out, err),
         "help" => {
