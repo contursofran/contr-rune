@@ -21,7 +21,10 @@ mod grid;
 mod hc;
 mod keys;
 mod notch;
+mod orchestrator;
+mod outline;
 mod paths;
+mod projects;
 mod prompt;
 mod pty;
 mod select;
@@ -33,6 +36,7 @@ mod split;
 mod terminal_view;
 mod theme;
 mod titlebar;
+mod update;
 mod usage;
 
 use std::collections::HashMap;
@@ -163,22 +167,35 @@ struct App {
     plans: usage::Plans,
     /// The terminal text selection (T1).
     select: select::Select,
+    /// The update check, pill and toast (R3a).
+    update: update::Updater,
+    /// The orchestrator outline (H10).
+    outline: outline::State,
 }
 
 fn init() -> App {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-    let paths: Vec<PathBuf> = match std::env::var("CONTR_PROJECTS") {
-        Ok(list) => list
+    // `CONTR_PROJECTS` wins; else the saved projects (C5); else the folder we started in and home.
+    let mut saved_selected = None;
+    let paths: Vec<PathBuf> = match std::env::var("CONTR_PROJECTS").ok().filter(|l| !l.is_empty()) {
+        Some(list) => list
             .split(':')
             .filter(|p| !p.is_empty())
             .map(|p| match p.strip_prefix("~/") { Some(rest) => home.join(rest), None => PathBuf::from(p) })
             .filter(|p| p.is_dir())
             .collect(),
-        Err(_) => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
-            if cwd == home { vec![home] } else { vec![cwd, home] }
-        }
+        None => match projects::load() {
+            Some(saved) => {
+                saved_selected = saved.selected;
+                saved.open
+            }
+            None => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
+                if cwd == home { vec![home] } else { vec![cwd, home] }
+            }
+        },
     };
+    let selected_project = saved_selected.and_then(|s| paths.iter().position(|p| *p == s)).unwrap_or(0);
     let projects = paths
         .into_iter()
         .map(|path| Project {
@@ -202,7 +219,7 @@ fn init() -> App {
     let mut app = App {
         projects,
         tabs: Vec::new(),
-        selected_project: 0,
+        selected_project,
         active: None,
         waker: None,
         next_id: 1,
@@ -244,6 +261,8 @@ fn init() -> App {
         card: notch::Card::default(),
         plans: usage::Plans::new(),
         select: select::Select::default(),
+        update: update::Updater::new(),
+        outline: outline::State::default(),
     };
     app.reload_owner(true);
     app
@@ -308,7 +327,7 @@ impl App {
         // The first tab of the selected project shows; else the first one.
         match opened.iter().find(|(_, p)| *p == self.selected_project).or(opened.first()) {
             Some((id, _)) => self.select_tab(*id),
-            None if self.tabs.is_empty() && !self.projects.is_empty() => self.open_tab(0),
+            None if self.tabs.is_empty() && !self.projects.is_empty() => self.open_tab(self.selected_project),
             None => {}
         }
     }
@@ -423,6 +442,15 @@ impl App {
         match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id())) {
             Some(id) => self.select_tab(id),
             None => { self.split = None; self.active = None; self.find.close(); }
+        }
+        self.save_projects();
+    }
+
+    /// Keep the open projects and the selected one in the projects file (C5).
+    fn save_projects(&mut self) {
+        let open: Vec<&Path> = self.projects.iter().map(|p| p.path.as_path()).collect();
+        if let Err(e) = projects::save(&open, self.projects.get(self.selected_project).map(|p| p.path.as_path())) {
+            self.error = Some(format!("couldn't save the projects: {e}"));
         }
     }
 
@@ -709,7 +737,7 @@ fn setup(s: &mut App, waker: Waker) {
             // With hc the tabs of the last run come back; the listing decides whether a new one opens.
             Some(d) if rune::is_headless() => s.restore_tabs(restore::list(&d)),
             Some(d) => restore::spawn(d, s.hc_tx.clone(), waker),
-            None => s.open_tab(0),
+            None => s.open_tab(s.selected_project),
         }
     }
 }
@@ -802,7 +830,9 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
         tx.wake_after(OWNER_EVERY);
     }
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
+    changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
+    s.sync_outline();
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
     let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited().load(Ordering::Acquire)).map(|t| t.session.id()).collect();
     for id in exited {
@@ -960,11 +990,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         dialog::build(k, s, &mut layer);
     }
     notch::card(k, s, &mut layer);
+    update::overlays(k, s, &mut layer);
+    outline::card(k, s, &mut layer);
     shell::window(k, bar, sidebar::view(k, s, &mut layer), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| {
             s.focused = focused;
             // Coming back: the file may have changed meanwhile.
-            if focused { s.reload_owner(false); }
+            if focused { s.reload_owner(false); s.update.on_focus(); }
         })
 }
 
@@ -1066,6 +1098,14 @@ fn main() {
                 s.card.open = true;
                 // The tab of the first question, after the blocked agent of the fake core's fixture.
                 s.card.tab = 1;
+            }),
+            // Three shells and the update check run at once (`CONTR_UPDATE_URL`): the pill and the toast show for a newer release.
+            ("update", |s| {
+                s.open_tab(0);
+                s.open_tab(0);
+                s.open_tab(0);
+                s.refresh_diff_now();
+                s.update.check_now();
             }),
             // One shell with known text, the find bar closed (the tests type the query).
             ("find-text", |s| {

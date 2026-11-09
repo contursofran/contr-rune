@@ -1,0 +1,8 @@
+{
+  "html_url": "https://github.com/contursofran/contr-rune/releases/tag/v9.9.9",
+  "tag_name": "v9.9.9",
+  "name": "v9.9.9",
+  "draft": false,
+  "prerelease": false,
+  "body": "Ad-hoc signed, not notarised.\n\n## What's Changed\n* Update pill and toast by @contursofran in https://github.com/contursofran/contr-rune/pull/52\n* Restart now swaps the app by @contursofran in https://github.com/contursofran/contr-rune/pull/53\n* Fix: tabs keep their order by @contursofran in https://github.com/contursofran/contr-rune/pull/54\n\n**Full Changelog**: https://github.com/contursofran/contr-rune/compare/v0.1.0...v9.9.9"
+}

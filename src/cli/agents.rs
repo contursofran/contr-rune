@@ -60,6 +60,10 @@ pub struct Env {
     pub kit: Option<OsString>,
     pub home: Option<PathBuf>,
     pub terminal_id: String,
+    /// `owner.json`, for the owner tools of `mcp`.
+    pub owner_file: Option<PathBuf>,
+    /// The project the owner tools write for.
+    pub project: String,
 }
 
 impl Env {
@@ -70,6 +74,8 @@ impl Env {
             kit: var("CONTR_KIT"),
             home: var("HOME").map(PathBuf::from),
             terminal_id: var("HC_TERMINAL_ID").map(|v| v.to_string_lossy().into_owned()).unwrap_or_default(),
+            owner_file: paths::owner_file(),
+            project: super::owner::project_name(),
         }
     }
 }
@@ -161,7 +167,7 @@ fn parse(sub: &str, args: &[String]) -> Result<Parsed, String> {
 
 /// The task of a spawn: the text, or the content of `file`. Both at once, a missing file and a
 /// file of blanks are errors, so a quoting slip never starts a worker with a wrong brief.
-fn spawn_task(text: &str, file: &str) -> Result<String, String> {
+pub(super) fn spawn_task(text: &str, file: &str) -> Result<String, String> {
     if file.is_empty() {
         return Ok(text.to_owned());
     }
@@ -189,7 +195,7 @@ fn spec_of(p: &Parsed, terminal_id: &str) -> Result<Spec, String> {
 }
 
 /// A line to the core. The child process of `hc connect` lives as long as the `Keep`.
-fn connect() -> Result<(Conn, Keep), String> {
+pub(super) fn connect() -> Result<(Conn, Keep), String> {
     let dialer = Dialer::from_env(false).map_err(|s| match s {
         HcStatus::Off => "hc is off (CONTR_HC=off)".to_owned(),
         HcStatus::NotInstalled => "hc is not installed (set CONTR_HC to its path)".to_owned(),
@@ -211,7 +217,7 @@ fn flow_text(env: &Env) -> String {
     }
 }
 
-fn load(env: &Env) -> Result<Config, String> {
+pub(super) fn load(env: &Env) -> Result<Config, String> {
     match &env.config_path {
         Some(path) => Config::load(path),
         None => Err("agents: no home folder to find agents.json in".into()),
@@ -432,7 +438,7 @@ mod tests {
     }
 
     fn call(args: &str, config: Option<PathBuf>) -> (i32, String, String) {
-        let env = Env { config_path: config, kit: None, home: None, terminal_id: String::new() };
+        let env = Env { config_path: config, kit: None, home: None, terminal_id: String::new(), owner_file: None, project: String::new() };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(&words(args), &env, &mut out, &mut err);
         (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())

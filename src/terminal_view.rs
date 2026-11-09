@@ -7,11 +7,15 @@ use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, TextInput};
 
 use crate::split::Split;
 use crate::theme::*;
-use crate::{App, Tab, find, grid, label, notch, scroll_tab, select, shell, split};
+use crate::{App, Tab, find, grid, label, notch, outline, scroll_tab, select, shell, split};
 
 
 pub(crate) fn terminal_panel(k: &Kit, s: &App) -> El {
     let panel = terminal_panel_body(k, s);
+    let panel = match outline::ticks(k, s) {
+        Some(o) => panel.child(o),
+        None => panel,
+    };
     match notch::notch(k, s) {
         Some(n) => panel.child(n),
         None => panel,
