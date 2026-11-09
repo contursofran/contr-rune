@@ -110,6 +110,17 @@ fn escape_gives_focus_back_and_the_next_key_reaches_the_shell() {
 }
 
 #[test]
+fn a_clicked_tick_does_not_keep_focus_but_enter_does() {
+    let r = run(vec![tap(0.5, "agent/t3"), tap(1.0, "outline/tick/T1"), key(1.2, "Down"), typed(1.4, "ls")]);
+    assert_eq!(r.find("outline/card/title").unwrap()["text"], "Renew the certificate", "the click opened it");
+    assert_eq!(r.find("outline/tick/T2").unwrap()["focused"], false);
+    assert_eq!(r.data("t3"), "\x1b[Bls", "the arrow and text reached the shell");
+    // ⏎ on a focused tick keeps focus: ↓ still moves to the next.
+    let r = run(vec![tap(0.5, "agent/t3"), tap(0.7, "grid"), enter(1.0), key(1.2, "Enter"), key(1.4, "Down")]);
+    assert_eq!(r.find("outline/tick/T2").unwrap()["focused"], true);
+}
+
+#[test]
 fn a_tick_is_a_button_labelled_with_its_headline() {
     let r = run(vec![tap(0.5, "agent/t3")]);
     let t2 = r.find("outline/tick/T2").unwrap();

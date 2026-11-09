@@ -8,6 +8,7 @@
 //!
 //! Keys: with the terminal in front, ⌥⇥ moves focus to the first tick (plain ⇥ stays the shell's);
 //! then ↑ ↓ move between ticks, ⏎ or space opens one and Esc gives focus back to the terminal.
+//! A click on a tick opens it but does not keep focus: the next keys go to the shell.
 //! Rune does the focus work (a `list` focus group of `focusable` ticks); `key` only enters and leaves.
 //!
 //! Elements: `outline` (label "Orchestrator messages, N new"), `outline/count`, `outline/tick/<ID>`
@@ -79,6 +80,8 @@ pub struct State {
     open: Option<String>,
     /// The plain ⇥ that ⌥⇥ sent on is on its way to Rune's focus order, not to the shell.
     entering: bool,
+    /// ⏎ or space was just pressed on a tick: the press that follows is the keyboard's, not a click.
+    keyed: bool,
 }
 
 impl State {
@@ -173,7 +176,10 @@ pub fn ticks(k: &Kit, s: &App) -> Option<El> {
     let (tab, msgs) = current(s)?;
     let c = &k.c;
     let new = msgs.iter().filter(|m| s.outline.is_new(tab, &m.id)).count();
-    let mut column = col().key("outline").role("list").focus_group().label(format!("Orchestrator messages, {new} new")).items_end().gap(1.0).py(6.0);
+    let mut column = col().key("outline").role("list").focus_group().on_key(|s: &mut App, ev: &KeyEvent, _tx: &mut Tx| {
+        s.outline.keyed = matches!(&ev.key, Key::Enter) || ev.key == Key::Text(" ".into());
+        false
+    }).label(format!("Orchestrator messages, {new} new")).items_end().gap(1.0).py(6.0);
     if new > 0 {
         column = column.child(text(new.to_string()).key("outline/count").font(META).color(c.text_base).mb(2.0));
     }
@@ -204,7 +210,13 @@ pub fn ticks(k: &Kit, s: &App) -> Option<El> {
                         s.outline.hover = None;
                     }
                 })
-                .on_press(move |s: &mut App| s.press_tick(&press))
+                .on_press_tx(move |s: &mut App, tx: &mut Tx| {
+                    // A click leaves focus with the terminal; only ⏎ and space keep it on the tick.
+                    if !std::mem::take(&mut s.outline.keyed) {
+                        tx.blur();
+                    }
+                    s.press_tick(&press);
+                })
                 .child(el().w(width).h(2.0).radius(1.0).fill(ink)),
         );
     }
