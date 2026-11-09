@@ -1002,6 +1002,10 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
     }
     changed |= hc_fallbacks(s);
     changed |= select::sweep(s);
+    if select::autoscroll(s) {
+        changed = true;
+        tx.wake_after(select::AUTO_EVERY);
+    }
     // The owner's file: look at it every second while the window has the focus, and not at all otherwise.
     if s.focused && s.owner.is_some() {
         changed |= s.reload_owner(false);
