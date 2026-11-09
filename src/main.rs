@@ -22,6 +22,7 @@ mod hc;
 mod keys;
 mod notch;
 mod paths;
+mod prompt;
 mod pty;
 mod select;
 mod session;
