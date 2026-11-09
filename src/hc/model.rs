@@ -44,7 +44,8 @@ pub struct Agent {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub title: String,
-    pub age_ms: u64,
+    /// Time since the last activity; `None` when no stamp is known (0 or missing).
+    pub age_ms: Option<u64>,
     pub state: AgentState,
     pub created_ms: u64,
     /// No `contr=agent` label: found by the Claude process in it.
@@ -126,7 +127,8 @@ pub fn derive(terminals: &[Terminal], stamps: &HashMap<String, u64>, known: &[Kn
             let f = folder.as_deref()?;
             known.iter().enumerate().filter(|(_, k)| within(k.path, f)).max_by_key(|(_, k)| k.path.components().count()).map(|(i, _)| i)
         };
-        let stamp = stamps.get(&t.address).copied().unwrap_or(t.status_ms);
+        // A 0 stamp means unknown: fall back to the status stamp, then `created_ms`, else no age.
+        let stamp = [stamps.get(&t.address).copied().unwrap_or(0), t.status_ms, t.created_ms].into_iter().find(|s| *s > 0);
         let state = if t.state == "finished" {
             AgentState::Ended
         } else {
@@ -146,7 +148,7 @@ pub fn derive(terminals: &[Terminal], stamps: &HashMap<String, u64>, known: &[Kn
             model: flag(&t.argv, "--model").or_else(|| label(t, "contr.model").map(str::to_owned)),
             effort: flag(&t.argv, "--effort").or_else(|| label(t, "contr.effort").map(str::to_owned)),
             title: t.title.clone(),
-            age_ms: now.saturating_sub(stamp),
+            age_ms: stamp.map(|s| now.saturating_sub(s)),
             state,
             created_ms: t.created_ms,
             foreign: !ours,
@@ -508,9 +510,18 @@ mod tests {
         let known: Vec<Known> = KNOWN.iter().map(|(n, p)| Known { name: n, path: Path::new(p) }).collect();
         let stamps = HashMap::from([("t2".to_owned(), 9_000)]);
         let a = derive(&[x, y], &stamps, &known, &|p, f| f.starts_with(p), 10_000);
-        assert_eq!((a[0].age_ms, a[1].age_ms), (6_000, 1_000));
+        assert_eq!((a[0].age_ms, a[1].age_ms), (Some(6_000), Some(1_000)));
         let future = derive(&[agent_t("t3", 1, "builder", "a")], &HashMap::from([("t3".into(), 99_000)]), &known, &|p, f| f.starts_with(p), 10_000);
-        assert_eq!(future[0].age_ms, 0, "a stamp ahead of the clock is age 0");
+        assert_eq!(future[0].age_ms, Some(0), "a stamp ahead of the clock is age 0");
+        // Missing stamps: created_ms when set, else no age.
+        let mut z = agent_t("t4", 0, "builder", "a");
+        z.status_ms = 0;
+        z.created_ms = 0;
+        let mut c = agent_t("t5", 0, "builder", "a");
+        c.status_ms = 0;
+        c.created_ms = 7_000;
+        let a = derive(&[z, c], &HashMap::new(), &known, &|p, f| f.starts_with(p), 10_000);
+        assert_eq!((a[0].age_ms, a[1].age_ms), (None, Some(3_000)), "a 0 stamp is unknown, not 1970");
     }
 
     fn tree() -> Vec<Agent> {
