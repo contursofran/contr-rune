@@ -236,8 +236,6 @@ impl Plans {
 }
 
 /// The context window of one agent (`usage/context/<id>.json`).
-// Read by the context meter under the file tree (H13).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Context {
     pub tokens: u64,
@@ -274,7 +272,6 @@ fn short_tokens(n: u64) -> String {
 }
 
 /// The context in a file's text; none for a bad file, another schema or no window size.
-#[allow(dead_code)]
 pub fn parse_context(text: &str) -> Option<Context> {
     #[derive(Deserialize)]
     struct Raw {

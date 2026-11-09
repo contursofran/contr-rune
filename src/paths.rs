@@ -16,12 +16,10 @@ fn default_dir(env: Env) -> Option<PathBuf> {
 }
 
 /// `CONTR_STATE_DIR`, else `~/Library/Application Support/contr`.
-#[allow(dead_code)] // used by D7 (session file) and D10 (context file)
 pub fn state_dir() -> Option<PathBuf> {
     state_dir_in(&real_env)
 }
 
-#[allow(dead_code)] // used by D7 (session file) and D10 (context file)
 pub fn state_dir_in(env: Env) -> Option<PathBuf> {
     match env("CONTR_STATE_DIR") {
         Some(dir) => Some(PathBuf::from(dir)),
@@ -54,7 +52,6 @@ pub fn owner_file_in(env: Env) -> Option<PathBuf> {
 }
 
 /// Every character outside `[A-Za-z0-9_-]` becomes `_`, so an id is safe as a file name.
-#[allow(dead_code)] // used by D7 (session file) and D10 (context file)
 pub fn sanitize_id(id: &str) -> String {
     id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
 }
