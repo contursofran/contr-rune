@@ -353,9 +353,13 @@ fn project_menu(k: &Kit, s: &App, layer: &mut Vec<El>) {
 fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
     let a = line.agent;
     let address = a.address.clone();
-    let row = SidebarRow::new(a.display_title().to_owned())
+    let mut meta = model::meta(line);
+    if s.gh.ci(a) {
+        meta.push_str("  CI");
+    }
+    let row = SidebarRow::new(s.gh.title(&a.address).unwrap_or(a.display_title()).to_owned())
         .avatar(agent_glyph(k, a))
-        .subtitle(model::meta(line))
+        .subtitle(meta)
         .subtitle_style(theme::META)
         .title_style(theme::BODY)
         .detail(a.age_ms.map(|ms| fmt_age(ms / 1000)).unwrap_or_default())
