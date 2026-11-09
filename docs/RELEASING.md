@@ -7,5 +7,11 @@
   GitHub Release with these assets. The in-app updater downloads exactly these names:
   - `contr-rune-macos-arm64.zip` (`ditto -c -k --keepParent` of `contr-rune.app`)
   - `contr-rune-macos-arm64.zip.sha256` (`shasum -a 256` output)
+  - `contr-rune-macos-arm64.zip.sig` (the raw 64-byte ed25519 signature of the zip, from
+    `openssl pkeyutl -sign -rawin`)
+- The release job signs with the GitHub secret `RELEASE_SIGNING_KEY` (an ed25519 private key in PEM, made with
+  `openssl genpkey -algorithm ed25519`). The app embeds the public key (`PUBKEY` in `src/update.rs`) and refuses an
+  update whose `.sig` is missing or wrong. Changing the key means a release signed with the old key first, so the
+  installed apps can still update.
 - The app is ad-hoc signed, not notarised. The release notes say how to open it the first time.
 - `workflow_dispatch` runs a dry build without publishing.

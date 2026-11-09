@@ -75,3 +75,39 @@ fn settings_says_which_version_is_ready() {
     let current = run("current.json", vec![tap(0.3, "settings")]);
     assert_eq!(current.text_in("version/contr-rune", "version/contr-rune/value").unwrap(), format!("{} \u{b7} up to date", env!("CARGO_PKG_VERSION")));
 }
+
+/// The key pair of the fixtures' signatures (made for tests; the private half is not kept).
+const TEST_KEY: &str = "d7fa0b684898d1703f79456a4923aac56a1e5af9f1928d77d337d58179a9c7cf";
+
+/// "Restart now" with the assets of `dir` (next to its `newer.json`), a dry run (no swap), then Settings.
+fn install(dir: &str) -> Run {
+    let events = vec![tap(0.3, "update-pill"), tap(0.6, "update-panel/restart"), tap(0.9, "settings")];
+    App::new()
+        .scene("update")
+        .env("CONTR_UPDATE_URL", fixture(&format!("../{dir}/newer.json")))
+        .env("CONTR_UPDATE_PUBKEY", TEST_KEY)
+        .env("CONTR_UPDATE_DRY", "1")
+        .events(events)
+        .end(1.5)
+        .run()
+}
+
+fn version_value(t: &Run) -> String {
+    t.text_in("version/contr-rune", "version/contr-rune/value").unwrap()
+}
+
+#[test]
+fn restart_now_downloads_and_verifies_the_signed_zip_then_stops() {
+    let t = install("update");
+    assert!(version_value(&t).contains("9.9.9 verified (dry run)"), "{}", version_value(&t));
+    assert!(!t.has("update/error"));
+}
+
+#[test]
+fn a_bad_signature_refuses_the_update_and_shows_in_settings() {
+    let t = install("update-bad");
+    assert!(t.texts().iter().any(|x| x.contains("signature does not match")), "{:?}", t.texts());
+    assert!(t.has("update/error"));
+    assert!(!t.has("update-toast"), "an error is not a toast (D176)");
+    assert!(version_value(&t).contains("9.9.9 available"));
+}

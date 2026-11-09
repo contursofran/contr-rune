@@ -13,6 +13,8 @@ portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+# Release signature check (R3b): the zip is signed with ed25519 in the release job.
+ed25519-dalek = { version = "2", default-features = false }
 
 [profile.dev.package."*"]
 opt-level = 2

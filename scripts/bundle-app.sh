@@ -27,6 +27,9 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/target/release/$name" "$app/Contents/MacOS/$name"
 cp "$root/assets/icon/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 
+# The Claude Code plugin (agents, playbook, hooks); `agents::spawn` looks for it here.
+cp -R "$root/kit" "$app/Contents/Resources/kit"
+
 # Fonts are embedded with include_bytes!, so nothing else is copied.
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

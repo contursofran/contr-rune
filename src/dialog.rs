@@ -1,7 +1,7 @@
 //! The settings dialog (K7a): a modal card near the top-centre over a dim scrim. Head with
 //! "Settings" and an `esc` chip, the Appearance row (System, Dark, Light), the versions, and a
 //! Done button. Keys: `settings-scrim`, `settings-dialog`, `settings-esc`, `appearance`,
-//! `settings-done`, `version/contr-rune`, `version/hc`, `settings-check-updates`.
+//! `settings-done`, `version/contr-rune`, `version/hc`, `settings-check-updates`, `update/error`.
 //!
 //! The design's Transparency sliders are left out: the window is opaque.
 
@@ -78,7 +78,14 @@ pub fn build(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .on_press(|s: &mut App| s.update.check_again())
         .build(k)
         .key("settings-check-updates");
-    let updates = row().w_full().px(20.0).pb(8.0).child(spacer()).child(check);
+    let mut updates = row().w_full().px(20.0).pb(8.0).gap(12.0).center_y();
+    if let Some(e) = s.update.error() {
+        // The install failed (D176: here, not in a toast).
+        updates = updates.child(text(e.to_owned()).key("update/error").font(k.ty.text_small).color(c.danger.fg).wrap().grow(1.0));
+    } else {
+        updates = updates.child(spacer());
+    }
+    let updates = updates.child(check);
 
     let done = Button::new("Done").variant(ButtonVariant::Contrast).on_press(close).build(k).key("settings-done");
     let footer = row().w_full().px(20.0).pt(10.0).pb(14.0).child(spacer()).child(done);

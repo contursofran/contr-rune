@@ -1,0 +1,11 @@
+{
+  "name": "contr-rune",
+  "owner": { "name": "contr" },
+  "plugins": [
+    {
+      "name": "contr",
+      "source": "./kit",
+      "description": "Worker agents and the coordinator playbook for contr: builder, planner and reviewer, started with contr-rune agents."
+    }
+  ]
+}
