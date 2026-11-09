@@ -6,7 +6,8 @@
 //! `CONTR_PROJECTS=~/a:~/b cargo run` opens those folders as projects (default: the current
 //! folder and home). Shortcuts: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Tab /
 //! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS), Ctrl+Shift+F find
-//! (⌘F; ⌘G / ⌘⇧G or Return / Shift+Return step, esc closes).
+//! (⌘F; ⌘G / ⌘⇧G or Return / Shift+Return step, esc closes), Ctrl+Shift+D split (⌘D), Ctrl+Shift+[ / ]
+//! focus the left / right pane (⌘[ / ⌘]).
 
 mod dialog;
 mod diff;
@@ -18,6 +19,7 @@ mod session;
 mod settings;
 mod shell;
 mod sidebar;
+mod split;
 mod theme;
 
 use std::path::PathBuf;
@@ -28,13 +30,14 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::term::TermMode;
 use rune_kit::shell::{TabDragState, TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
 use rune_kit::{Button, ButtonVariant, ControlSize, FileNode, IconButton, IconButtonVariant, Kit, State, TextInput, Tree, TreeItem, TreeStyle};
-use rune::{AppSpec, Color, Cx, El, Icon, Key, KeyEvent, Tx, Waker, WheelEvent, col, row, spacer, text};
+use rune::{AppSpec, Color, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, Phase, Tx, Waker, WheelEvent, col, el, row, spacer, text};
 
 use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use find::Find;
 use session::{Session, Size, now_ms};
 use settings::Appearance;
+use split::Split;
 use theme::*;
 
 /// The diff summary is refreshed at most this often (a new project selection refreshes at once).
@@ -68,8 +71,12 @@ struct App {
     active: Option<u64>,
     waker: Option<Waker>,
     next_id: u64,
-    /// Terminal size from the laid-out grid area.
-    size: Size,
+    /// Terminal size of each pane's laid-out grid area (the second is used while split).
+    pane_size: [Size; 2],
+    /// Two panes side by side (⌘D); `None` shows `active` alone.
+    split: Option<Split>,
+    /// The split row's laid-out width, for the divider drag.
+    split_total: f32,
     wheel: f32,
     statuses: Vec<(u64, Status)>,
     focused: bool,
@@ -131,7 +138,9 @@ fn init() -> App {
         active: None,
         waker: None,
         next_id: 1,
-        size: Size { cols: 100, rows: 30 },
+        pane_size: [Size { cols: 100, rows: 30 }; 2],
+        split: None,
+        split_total: 0.0,
         wheel: 0.0,
         statuses: Vec::new(),
         focused: true,
@@ -157,7 +166,7 @@ impl App {
     fn open_tab(&mut self, project: usize) {
         let Some(p) = self.projects.get(project) else { return };
         let id = self.next_id;
-        match Session::spawn(id, &p.path, self.size, self.waker.clone()) {
+        match Session::spawn(id, &p.path, self.pane_size[self.focus_idx()], self.waker.clone()) {
             Ok(session) => {
                 self.next_id += 1;
                 self.tabs.push(Tab { project, session });
@@ -181,9 +190,18 @@ impl App {
     }
 
     fn select_tab(&mut self, id: u64) {
-        let Some(t) = self.tabs.iter_mut().find(|t| t.session.id == id) else { return };
-        t.session.resize(self.size);
-        let project = t.project;
+        let Some(project) = self.tabs.iter().find(|t| t.session.id == id).map(|t| t.project) else { return };
+        // A split belongs to one project: a tab of another project takes the whole panel.
+        if self.split.as_ref().is_some_and(|sp| sp.project != project) { self.split = None; }
+        // In a split the tab goes to the focused pane, or, when the other pane shows it, focus moves there.
+        if let Some(sp) = &mut self.split {
+            match sp.panes.iter().position(|p| *p == id) {
+                Some(i) => sp.focus = i,
+                None => sp.panes[sp.focus] = id,
+            }
+        }
+        let size = self.pane_size[self.focus_idx()];
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id == id) { t.session.resize(size); }
         self.selected_project = project;
         self.projects[project].last_tab = Some(id);
         // The find bar belongs to one terminal: another tab starts clean.
@@ -196,7 +214,7 @@ impl App {
         let last = self.projects[project].last_tab.filter(|id| self.tabs.iter().any(|t| t.session.id == *id));
         match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id)) {
             Some(id) => self.select_tab(id),
-            None => { self.active = None; self.find.close(); }
+            None => { self.split = None; self.active = None; self.find.close(); }
         }
     }
 
@@ -206,11 +224,14 @@ impl App {
         // Dropping the session closes the PTY; the shell gets SIGHUP.
         let siblings: Vec<u64> = self.project_tabs(project).map(|t| t.session.id).collect();
         let pos = siblings.iter().position(|s| *s == id).unwrap_or(0);
+        // Closing either pane's terminal un-splits; the other one stays.
+        let split = self.split.take_if(|sp| sp.panes.contains(&id));
         self.tabs.remove(i);
         if self.active == Some(id) {
             let rest: Vec<u64> = self.project_tabs(project).map(|t| t.session.id).collect();
-            match rest.get(pos.min(rest.len().saturating_sub(1))) {
-                Some(next) => self.select_tab(*next),
+            let other = split.map(|sp| if sp.panes[0] == id { sp.panes[1] } else { sp.panes[0] });
+            match other.or_else(|| rest.get(pos.min(rest.len().saturating_sub(1))).copied()) {
+                Some(next) => self.select_tab(next),
                 None => { self.active = None; self.find.close(); }
             }
         }
@@ -231,7 +252,9 @@ impl App {
     }
 
     fn cycle_tab(&mut self, step: i32) {
-        let ids: Vec<u64> = self.project_tabs(self.selected_project).map(|t| t.session.id).collect();
+        // In a split the other pane's tab is skipped: it is already on screen.
+        let hidden = self.split.as_ref().map(|sp| sp.panes[1 - sp.focus]);
+        let ids: Vec<u64> = self.project_tabs(self.selected_project).map(|t| t.session.id).filter(|i| Some(*i) != hidden).collect();
         if ids.is_empty() { return; }
         let cur = self.active.and_then(|a| ids.iter().position(|i| *i == a)).unwrap_or(0) as i32;
         let next = (cur + step).rem_euclid(ids.len() as i32) as usize;
@@ -250,15 +273,55 @@ impl App {
         self.statuses.iter().find(|(i, _)| *i == id).map(|(_, s)| *s).unwrap_or(Status::Idle)
     }
 
-    fn set_grid_area(&mut self, w: f32, h: f32) {
+    /// The focused pane (always 0 without a split).
+    fn focus_idx(&self) -> usize {
+        self.split.as_ref().map_or(0, |sp| sp.focus)
+    }
+
+    /// The session shown in pane `idx`.
+    fn pane_tab(&self, idx: usize) -> Option<u64> {
+        match &self.split {
+            Some(sp) => sp.panes.get(idx).copied(),
+            None => if idx == 0 { self.active } else { None },
+        }
+    }
+
+    /// Pane `idx`'s grid was laid out: its terminal gets that many columns and rows.
+    fn set_grid_area(&mut self, idx: usize, w: f32, h: f32) {
         let size = grid_size(w, h);
-        if size == self.size { return; }
-        self.size = size;
-        if let Some(id) = self.active
+        self.pane_size[idx] = size;
+        if let Some(id) = self.pane_tab(idx)
             && let Some(t) = self.tabs.iter_mut().find(|t| t.session.id == id)
         {
             t.session.resize(size);
         }
+    }
+
+    /// Split the panel in two (the current terminal left, a new one in the same project right), or
+    /// un-split: the focused pane takes the whole panel and the other terminal stays as a tab.
+    fn toggle_split(&mut self) {
+        if self.split.take().is_some() { return; }
+        let Some(left) = self.active else { return };
+        let project = self.selected_project;
+        let before = self.tabs.len();
+        self.open_tab(project);
+        if self.tabs.len() > before
+            && let Some(right) = self.active
+        {
+            self.split = Some(Split::new(left, right, project));
+        }
+    }
+
+    /// Give pane `idx` the focus: its tab becomes the selected one.
+    fn focus_pane(&mut self, idx: usize) {
+        if let Some(id) = self.split.as_ref().and_then(|sp| sp.panes.get(idx).copied()) {
+            self.select_tab(id);
+        }
+    }
+
+    /// Move the divider; the left pane's share stays inside the limits.
+    fn set_split_frac(&mut self, frac: f32) {
+        if let Some(sp) = &mut self.split { sp.frac = split::clamp_frac(frac); }
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
@@ -498,6 +561,19 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.settings_open = true;
         return true;
     }
+    if is_shortcut(ev, 'd') {
+        s.toggle_split();
+        return true;
+    }
+    // ⌘[ and ⌘] move the focus left and right; with Shift held (off macOS) the keys read as { and }.
+    if is_shortcut(ev, '[') || is_shortcut(ev, '{') {
+        s.focus_pane(0);
+        return true;
+    }
+    if is_shortcut(ev, ']') || is_shortcut(ev, '}') {
+        s.focus_pane(1);
+        return true;
+    }
     if is_shortcut(ev, 'v') {
         tx.read_clipboard(|s: &mut App, content, _tx| s.paste(content.text()));
         return true;
@@ -506,8 +582,8 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Tab if ev.mods.ctrl => { s.cycle_tab(if ev.mods.shift { -1 } else { 1 }); return true; }
         Key::PageDown if ev.mods.ctrl => { s.cycle_tab(1); return true; }
         Key::PageUp if ev.mods.ctrl => { s.cycle_tab(-1); return true; }
-        Key::PageUp if ev.mods.shift => { scroll_active(s, s.size.rows as i32 - 1); return true; }
-        Key::PageDown if ev.mods.shift => { scroll_active(s, -(s.size.rows as i32 - 1)); return true; }
+        Key::PageUp if ev.mods.shift => { scroll_active(s, s.pane_size[s.focus_idx()].rows as i32 - 1); return true; }
+        Key::PageDown if ev.mods.shift => { scroll_active(s, -(s.pane_size[s.focus_idx()].rows as i32 - 1)); return true; }
         _ => {}
     }
     // While the bar's input has the focus, typing belongs to it.
@@ -521,7 +597,11 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn scroll_active(s: &mut App, lines: i32) {
-    if let Some(t) = s.active_tab() { t.session.scroll(lines); }
+    if let Some(id) = s.active { scroll_tab(s, id, lines); }
+}
+
+fn scroll_tab(s: &App, id: u64, lines: i32) {
+    if let Some(t) = s.tabs.iter().find(|t| t.session.id == id) { t.session.scroll(lines); }
 }
 
 // ───────────────────────────── view ─────────────────────────────
@@ -619,8 +699,17 @@ fn trailing(k: &Kit, s: &App) -> Vec<El> {
         );
     }
     let icon = |i: &'static Icon, label: &str| IconButton::new(i).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Large).label(label.to_owned());
-    // Split has no action yet; it keeps its place and tooltip.
-    items.push(icon(&SPLIT, "Split terminal").help("Split terminal").build(k).key("split"));
+    let split_chord = if cfg!(target_os = "macos") { "cmd+d" } else { "ctrl+shift+d" };
+    items.push(
+        icon(&SPLIT, "Split terminal")
+            .help("Split terminal")
+            .shortcut(split_chord)
+            .state(if s.split.is_some() { State::Pressed } else { State::Rest })
+            // The button gives the focus back: a space typed next would press it again.
+            .on_press_tx(|s: &mut App, tx: &mut Tx| { s.toggle_split(); tx.blur(); })
+            .build(k)
+            .key("split"),
+    );
     let find_chord = if cfg!(target_os = "macos") { "cmd+f" } else { "ctrl+shift+f" };
     items.push(
         icon(&SEARCH, "Search")
@@ -730,47 +819,113 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
             .child(label("No terminal in this project", k.ty.ui, c.text_faint))
             .child(label("+ or Ctrl+Shift+T opens one", k.ty.text_xsmall, c.icon_faint));
     };
-    let (total, lines) = {
+    let total = find_total(s, t);
+    let panel = match &s.split {
+        None => shell::terminal_panel(k).child(pane(k, s, 0, t.session.id, false)),
+        Some(sp) => shell::terminal_panel(k).child(split_row(k, s, sp)),
+    };
+    if s.find.open { panel.child(find_bar(k, s, total)) } else { panel }
+}
+
+/// The number of find matches in the focused terminal.
+fn find_total(s: &App, t: &Tab) -> usize {
+    if !s.find.open { return 0; }
+    let term = t.session.term.lock().unwrap();
+    s.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term).len()
+}
+
+/// Width of the divider's hit area; its hairline sits in the middle.
+const GRIP: f32 = 7.0;
+
+/// The two panes and the divider between them. Keys: `panes` (the row), `terminal/body` and
+/// `terminal/body/1` (the panes), `split/divider`.
+fn split_row(k: &Kit, s: &App, sp: &Split) -> El {
+    let c = &k.c;
+    let left = pane(k, s, 0, sp.panes[0], true).w_frac(sp.frac).min_w(0.0);
+    // The divider straddles the panes' edge: a hairline inside the right pane, a wider grip over it.
+    let hairline = el().key("split/hairline").w(1.0).fill(c.border_muted).pin(Some(0.0), Some(0.0), None, Some(0.0));
+    let grip = el()
+        .key("split/divider")
+        .role("separator")
+        .label("Resize panes")
+        .w(GRIP)
+        .cursor(Cursor::ResizeColumn)
+        // As the kit's own resize grips: nearly invisible, but with a fill so it takes the pointer.
+        .fill(Color::TRANSPARENT)
+        .opacity(0.02)
+        .pin(Some(-GRIP / 2.0), Some(0.0), None, Some(0.0))
+        .focusable(false)
+        .on_drag(|s: &mut App, d: &mut Drag, tx: &mut Tx| match d.phase {
+            Phase::Down => d.data = s.split.as_ref().map_or(0.5, |sp| sp.frac),
+            Phase::Move => {
+                tx.instant();
+                let frac = split::dragged_frac(d.data, d.dx, s.split_total);
+                s.set_split_frac(frac);
+            }
+            Phase::Up => {}
+        });
+    let right = pane(k, s, 1, sp.panes[1], true).grow(1.0).min_w(0.0).child(hairline).child(grip);
+    row()
+        .key("panes")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .on_layout(|s: &mut App, [_, _, w, _]| s.split_total = w)
+        .child(left)
+        .child(right)
+}
+
+/// Pane `idx`, showing terminal `id`: the grid padded as the target (14 top, 20 sides, 12 bottom).
+/// The first pane keeps the keys `terminal/body`, `grid` and `l<N>`; the second adds `/1` or `p1/`.
+/// In a split the focused pane has an outline.
+fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
+    let c = &k.c;
+    let focused = !split || s.focus_idx() == idx;
+    let Some(t) = s.tabs.iter().find(|t| t.session.id == id) else { return col() };
+    let lines = {
         let term = t.session.term.lock().unwrap();
-        let matches = if s.find.open { s.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term) } else { Default::default() };
+        let matches = if s.find.open && focused { s.find.matches(id, t.session.generation.load(Ordering::Acquire), &term) } else { Default::default() };
         let current = (!matches.is_empty()).then(|| s.find.current.min(matches.len() - 1));
-        let lines = grid::lines(&term, s.focused, &grid::Ink::from_kit(k), &matches, current);
-        (matches.len(), lines)
+        grid::lines(&term, s.focused && focused, &grid::Ink::from_kit(k), &matches, current)
+    };
+    let (grid_key, body_key, row_prefix) = if idx == 0 {
+        ("grid".to_owned(), "terminal/body".to_owned(), String::new())
+    } else {
+        (format!("grid/{idx}"), format!("terminal/body/{idx}"), format!("p{idx}/"))
     };
     let mut grid_el = col()
-        .key("grid")
+        .key(grid_key)
         .grow(1.0)
         .min_h(0.0)
         .w_full()
         .clip_rounded(0.0)
-        .on_layout(|s: &mut App, [_, _, w, h]| s.set_grid_area(w, h))
-        // A click on the grid gives the keys back to the shell; the bar and its highlights stay.
-        .on_press_tx(|s: &mut App, tx: &mut Tx| {
+        .on_layout(move |s: &mut App, [_, _, w, h]| s.set_grid_area(idx, w, h))
+        // A click on the grid focuses its pane and gives the keys back to the shell; the find bar and its highlights stay.
+        .on_press_tx(move |s: &mut App, tx: &mut Tx| {
+            s.focus_pane(idx);
             if s.find.open {
                 s.find.edit.focused = false;
                 tx.blur();
             }
         })
-        .on_wheel(|s: &mut App, ev: WheelEvent, _tx| {
+        .on_wheel(move |s: &mut App, ev: WheelEvent, _tx| {
             s.wheel += ev.dy;
             let lines = (s.wheel / LINE_H).trunc();
             if lines != 0.0 {
                 s.wheel -= lines * LINE_H;
-                scroll_active(s, lines as i32);
+                if let Some(id) = s.pane_tab(idx) { scroll_tab(s, id, lines as i32); }
             }
             true
         });
     for (i, line) in lines.into_iter().enumerate() {
         grid_el = grid_el.child(
-            text(line.text).key(format!("l{i}")).font(TERMINAL).color(c.text_base).spans(line.spans).h(LINE_H),
+            text(line.text).key(format!("{row_prefix}l{i}")).font(TERMINAL).color(c.text_base).spans(line.spans).h(LINE_H),
         );
     }
-
-    // The grid sits directly in the card, padded as the target (14 top, 20 sides, 12 bottom).
-    let panel = shell::terminal_panel(k).child(
-        col().key("terminal/body").grow(1.0).min_h(0.0).w_full().pt(PANEL_PAD_TOP).px(PANEL_PAD_X).pb(PANEL_PAD_BOTTOM).child(grid_el),
-    );
-    if s.find.open { panel.child(find_bar(k, s, total)) } else { panel }
+    let body = col().key(body_key).min_h(0.0).pt(PANEL_PAD_TOP).px(PANEL_PAD_X).pb(PANEL_PAD_BOTTOM).child(grid_el);
+    if !split { return body.grow(1.0).w_full(); }
+    // The border is always there, so the grid keeps its size when the focus moves. The caller sets the width.
+    body.h_full().border(1.0, if focused { k.alpha(c.border_focus, 0.5) } else { Color::TRANSPARENT })
 }
 
 /// The floating find bar at the top right of the terminal card: the input, "3 of 12", previous,
@@ -881,6 +1036,14 @@ fn main() {
             ("ansi", |s| {
                 s.open_tab(0);
                 if let Some(t) = s.active_tab() { t.session.write(ANSI_DEMO.as_bytes()); }
+                s.refresh_diff_now();
+            }),
+            // A split: the ANSI colours in the left pane, the find text in the right one (focused).
+            ("split", |s| {
+                s.open_tab(0);
+                if let Some(t) = s.active_tab() { t.session.write(ANSI_DEMO.as_bytes()); }
+                s.toggle_split();
+                if let Some(t) = s.active_tab() { t.session.write(FIND_DEMO.as_bytes()); }
                 s.refresh_diff_now();
             }),
             // One shell with known text, the find bar closed (the tests type the query).

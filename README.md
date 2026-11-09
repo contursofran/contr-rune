@@ -14,8 +14,14 @@ for contr.
 - **Tabs:** the selected project's terminals in a `TabStrip`, with a close button and a `+`.
 - **Terminal:** a real login shell in a PTY, parsed by `alacritty_terminal` and drawn as coloured text
   rows. Scrollback with the wheel or Shift+PageUp/PageDown. A tab closes when its shell exits.
-- **Title bar:** the diff summary of the project (`+added −removed`, files changed), a split button
-  (placeholder, no action yet), search and the files panel toggle.
+- **Title bar:** the diff summary of the project (`+added −removed`, files changed), a split button,
+  search and the files panel toggle.
+- **Split:** the Split button or ⌘D puts a new terminal of the same project on the right of the current one
+  (a tab and a sidebar row too); the button shows pressed. The focused pane has a soft outline; keys,
+  paste, Shift+PageUp and find go to it. Click a pane or press ⌘[ / ⌘] to focus it; the selected tab and
+  sidebar row follow, and selecting another tab shows it in the focused pane. Drag the divider to resize
+  (each pane keeps 20%). Split again or ⌘D un-splits: the focused pane takes the panel and the other terminal
+  stays as a tab. Closing a pane's terminal (⌘W, or its shell exiting) un-splits too. One split, side by side.
 - **Find:** the Search button or ⌘F opens a floating bar at the top right of the terminal. Typing
   highlights every match of the word (plain text, any case) in the scrollback and screen; the count
   reads "3 of 12". Return / ⌘G go to the next match, Shift+Return / ⌘⇧G to the previous, wrapping; the
@@ -41,6 +47,8 @@ at build time. Rune is pre-release, so `Cargo.toml` pins a commit of its `dev` b
 | Ctrl+Shift+W | ⌘W | Close tab |
 | Ctrl+Shift+B | ⌘B | Show or hide the files panel |
 | Ctrl+Shift+, | ⌘, | Open settings (Esc closes) |
+| Ctrl+Shift+D | ⌘D | Split the terminal in two, or un-split (the Split button too) |
+| Ctrl+Shift+[ / ] | ⌘[ / ⌘] | Focus the left / right pane |
 | Ctrl+Shift+F | ⌘F | Find in the terminal (the Search button too); Esc closes the bar |
 | Enter / Ctrl+Shift+G | Return / ⌘G | Next match (in the find bar; F3 too) |
 | Shift+Enter / Ctrl+Alt+Shift+G | Shift+Return / ⌘⇧G | Previous match (Shift+F3 too) |
