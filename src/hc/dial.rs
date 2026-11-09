@@ -107,6 +107,14 @@ impl Dialer {
         }
     }
 
+    /// Headless runs only: a tab's dial-run-attach steps hold the script until they end.
+    pub fn work_fake(&self) -> Option<fake::Work> {
+        match self {
+            Dialer::Fake(fx) => Some(fx.work()),
+            Dialer::Command { .. } => None,
+        }
+    }
+
     /// Headless runs only: hold the script until the fake core has been quiet for a moment.
     pub fn settle_fake(&self) {
         if let Dialer::Fake(fx) = self {

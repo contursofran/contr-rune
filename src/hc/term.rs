@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 
 use super::conn::{Conn, HcError};
 use super::dial::{Dialer, Keep};
+use super::fake::Work;
 use super::framed::{FramedConn, Ledger, StreamEvent};
 use super::watch::{self, TermEvent};
 use crate::session::{Events, SCROLLBACK, Size, now_ms, shell_name, subtitle, tab_title};
@@ -195,6 +196,7 @@ impl HcSession {
             generation: s.generation.clone(),
             painted: AtomicBool::new(false),
             waker,
+            launch: Mutex::new(s.shared.spec.dialer.work_fake()),
         };
         if let Err(e) = std::thread::Builder::new().name(format!("hc-term-{id}")).spawn(move || feed.run()) {
             *s.shared.failure.lock().unwrap() = Some(e.to_string());
@@ -383,6 +385,9 @@ struct Feed {
     /// An attach already painted this emulator: the next one clears the screen first.
     painted: AtomicBool,
     waker: Option<Waker>,
+    /// Headless: taken on the app's thread, so the script waits for the thread to start; dropped
+    /// once the first first dial-run-attach ends.
+    launch: Mutex<Option<Work>>,
 }
 
 impl Feed {
@@ -447,6 +452,7 @@ impl Feed {
     /// to a local PTY). `Ok(None)`: the terminal exists but the tab is over (closed meanwhile,
     /// or the attach failed): `exited` is set and the terminal is removed.
     fn create(&self) -> Result<Option<Attached>, String> {
+        let _work = self.launch.lock().unwrap().take();
         let link = self.shared.spec.dialer.dial().map_err(|e| e.to_string())?;
         let (conn, _hello) = FramedConn::connect(link.reader, link.writer, None, CALL).map_err(|e| e.to_string())?;
         *self.shared.keep.lock().unwrap() = Some(link.keep);
@@ -556,6 +562,8 @@ impl Feed {
     }
 
     fn try_attach(&self, resumed: bool) -> Result<Attached, AttachErr> {
+        // The first attach holds the launch's guard until it ends; a retry loop is not work to wait for.
+        let _work = self.launch.lock().unwrap().take();
         let address = self.shared.state.lock().unwrap().address.clone().ok_or(AttachErr::Final)?;
         let link = self.shared.spec.dialer.dial().map_err(|_| AttachErr::Retry)?;
         let (conn, _hello) = FramedConn::connect(link.reader, link.writer, None, CALL).map_err(|_| AttachErr::Retry)?;
