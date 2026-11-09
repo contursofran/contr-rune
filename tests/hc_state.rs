@@ -168,7 +168,7 @@ fn an_ended_agent_has_no_row_and_the_orchestrator_stops_waiting() {
 fn a_tab_whose_program_is_blocked_shows_needs_attention() {
     // The scene opens one tab: the fake core makes it `t20`. A blocked status for it marks its sidebar row.
     // The kit's attention mark is a 7 point dot in the status slot.
-    let dot = |r: &Run| r.elements().iter().any(|e| e["path"].as_str().is_some_and(|p| p.contains("/term-1/status/status-mark/")) && e["rect"][2] == 7.0 && e["rect"][3] == 7.0);
+    let dot = |r: &Run| r.elements().iter().any(|e| e["path"].as_str().is_some_and(|p| p.contains("/term-2/status/status-mark/")) && e["rect"][2] == 7.0 && e["rect"][3] == 7.0);
     let r = run(Some(vec![set_status(250, 13, "t20", status("blocked", Some("permission"), "Run it?"))]));
     assert!(dot(&r), "the blocked tab has the attention dot");
     assert!(!dot(calm()), "a calm tab has none");
@@ -180,6 +180,6 @@ fn a_missed_snapshot_without_the_tab_terminal_closes_the_tab() {
     let fx: Value = serde_json::from_str(include_str!("fixtures/hc/blocked.json")).unwrap();
     let missed = json!({"after_ms": 250, "method": "missed", "params": {"seq": 20, "terminals": fx["terminals"]}});
     let r = run(Some(vec![missed]));
-    assert!(!r.has("term-1"), "the tab row is gone");
-    assert!(calm().elements().iter().any(|e| e["key"] == "term-1"), "without the snapshot the tab stays");
+    assert!(!r.has("term-2"), "the tab row is gone");
+    assert!(calm().elements().iter().any(|e| e["key"] == "term-2"), "without the snapshot the tab stays");
 }

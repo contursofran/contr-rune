@@ -16,5 +16,8 @@ rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06
 # Release signature check (R3b): the zip is signed with ed25519 in the release job.
 ed25519-dalek = { version = "2", default-features = false }
 
+# Host CPU ticks and memory for the "this Mac" row (A5): bindings for Mach `host_statistics` and `sysctl`.
+libc = "0.2"
+
 [profile.dev.package."*"]
 opt-level = 2

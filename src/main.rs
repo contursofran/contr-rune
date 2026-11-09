@@ -20,6 +20,7 @@ mod flow_section;
 mod github;
 mod grid;
 mod hc;
+mod host;
 mod keys;
 mod notch;
 mod orchestrator;
@@ -38,13 +39,14 @@ mod settings_agents;
 mod shell;
 mod sidebar;
 mod split;
+mod tabs;
 mod terminal_view;
 mod theme;
 mod titlebar;
 mod update;
 mod usage;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -88,6 +90,9 @@ struct Project {
     last_tab: Option<u64>,
     /// Taken off the sidebar in the projects modal (C6); its terminals keep running.
     hidden: bool,
+    /// The worker whose tab shows in the project's set (T4): the last one selected. A plain tab keeps
+    /// it; a Claude session's tab drops it.
+    last_worker: Option<String>,
 }
 
 struct Tab {
@@ -169,6 +174,8 @@ struct App {
     gh: github::Info,
     /// The agent row that is selected (its address). Showing its terminal comes in H8.
     selected_agent: Option<String>,
+    /// Claude sessions whose tab was closed: they stay out of the set until selected in the sidebar.
+    hidden: HashSet<String>,
     agent_menu: sidebar::AgentMenu,
     /// The open tab menu (T3): the tab and where it opened.
     tab_menu: Option<(u64, rune::PointerPress)>,
@@ -180,6 +187,7 @@ struct App {
     card: notch::Card,
     /// Claude and Codex plan meters in the sidebar foot (H11).
     plans: usage::Plans,
+    host: host::Host,
     context: usage::ContextCache,
     session: session_panel::SessionCache,
     /// The terminal text selection (T1).
@@ -229,7 +237,7 @@ fn init() -> App {
         .map(|(path, hidden)| Project {
             name: sidebar::folder_name(&path),
             path,
-            last_tab: None,
+            last_tab: None, last_worker: None,
             hidden,
         })
         .collect();
@@ -285,6 +293,7 @@ fn init() -> App {
         agents_minute: 0,
         gh: github::Info::new(),
         selected_agent: None,
+        hidden: HashSet::new(),
         agent_menu: Default::default(),
         tab_menu: None,
         find: Find::new(),
@@ -293,6 +302,7 @@ fn init() -> App {
         owner_stamp: None,
         card: notch::Card::default(),
         plans: usage::Plans::new(),
+        host: host::Host::new(),
         context: usage::ContextCache::default(),
         session: session_panel::SessionCache::default(),
         select: select::Select::default(),
@@ -348,7 +358,7 @@ impl App {
                 restore::Target::Folder(path) => match self.projects.iter().position(|p| same(&p.path, &path)) {
                     Some(i) => i,
                     None => {
-                        self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false });
+                        self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false, last_worker: None });
                         self.projects.len() - 1
                     }
                 },
@@ -364,7 +374,7 @@ impl App {
         // The first tab of the selected project shows; else the first one.
         match opened.iter().find(|(_, p)| *p == self.selected_project).or(opened.first()) {
             Some((id, _)) => self.select_tab(*id),
-            None if self.tabs.is_empty() && !self.projects.is_empty() => self.open_tab(self.selected_project),
+            None if !self.tabs.iter().any(|t| t.agent.is_none()) && !self.projects.is_empty() => self.open_tab(self.selected_project),
             None => {}
         }
     }
@@ -394,7 +404,7 @@ impl App {
                 i
             }
             None => {
-                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false });
+                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false, last_worker: None });
                 self.projects.len() - 1
             }
         };
@@ -423,39 +433,113 @@ impl App {
             for a in agents.iter().filter(|a| a.project.is_none() && a.state != model::AgentState::Ended) {
                 let Some(path) = a.folder.clone().filter(|f| f.is_dir()) else { continue };
                 if self.projects.iter().any(|p| same_path(&p.path, &path)) { continue; }
-                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false });
+                self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None, hidden: false, last_worker: None });
                 added = true;
             }
             self.agents = agents;
             if !added { break; }
         }
         self.agents_minute = now / 60_000;
+        // A worker that is gone cannot be kept in the set.
+        let known: Vec<&str> = self.agents.iter().filter(|a| a.state != model::AgentState::Ended).map(|a| a.address.as_str()).collect();
+        for p in &mut self.projects {
+            if p.last_worker.as_deref().is_some_and(|w| !known.contains(&w)) { p.last_worker = None; }
+        }
+        self.sync_tabs();
         if self.selected_agent.as_ref().is_some_and(|a| !self.agents.iter().any(|x| &x.address == a)) {
             self.selected_agent = None;
         }
     }
 
-    /// Show an agent's terminal: select the tab that already shows it, else attach it (framed, with
-    /// history, read-write) as a tab of the agent's project in the focused pane. The tab is not
-    /// owned by the app (`Ownership::Borrowed`): closing it only detaches.
+    /// Show an agent's terminal: select the tab that already shows it, else attach it as a tab of the
+    /// agent's project. A Claude session the owner closed comes back.
     fn select_agent(&mut self, address: String) {
-        if let Some(id) = self.tabs.iter().find(|t| t.agent.as_deref() == Some(address.as_str())).map(|t| t.session.id()) {
-            self.select_tab(id);
-            return;
-        }
-        let Some(project) = self.agents.iter().find(|a| a.address == address).and_then(|a| a.project) else { return };
-        let Some(dialer) = self.hc_dialer.clone() else { return };
-        let Some(p) = self.projects.get(project) else { return };
+        self.hidden.remove(&address);
+        let id = match self.tabs.iter().find(|t| t.agent.as_deref() == Some(address.as_str())).map(|t| t.session.id()) {
+            Some(id) => id,
+            None => match self.attach_agent(address) {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        self.select_tab(id);
+    }
+
+    /// Attach an agent's terminal (framed, with history, read-write) as a tab of its project, in the
+    /// focused pane's size. The tab is not owned by the app (`Ownership::Borrowed`): closing it only
+    /// detaches. It is not selected.
+    fn attach_agent(&mut self, address: String) -> Option<u64> {
+        let project = self.agents.iter().find(|a| a.address == address).and_then(|a| a.project)?;
+        let dialer = self.hc_dialer.clone()?;
+        let p = self.projects.get(project)?;
         let id = self.next_id;
         self.next_id += 1;
         let size = self.pane_size[self.focus_idx()];
         let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: Some(address.clone()), ownership: Ownership::Borrowed };
         self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)), agent: Some(address) });
-        self.select_tab(id);
+        Some(id)
+    }
+
+    /// What a tab shows in the set (T4).
+    fn tab_kind(&self, t: &Tab) -> tabs::Kind<'_> {
+        match t.agent.as_deref().and_then(|addr| self.agents.iter().find(|a| a.address == addr)) {
+            Some(a) if a.is_orchestrator() => tabs::Kind::Claude(self.sidebar_place(a)),
+            Some(a) => tabs::Kind::Worker(&a.address),
+            None if self.tab_runs_claude(t.session.id()) => tabs::Kind::Claude(usize::MAX),
+            None => tabs::Kind::Plain,
+        }
+    }
+
+    /// The place of an agent among its project's sidebar rows.
+    fn sidebar_place(&self, a: &hc::model::Agent) -> usize {
+        a.project.and_then(|p| model::lines(&self.agents, p).iter().position(|l| l.agent.address == a.address)).unwrap_or(usize::MAX)
+    }
+
+    /// A plain tab whose terminal runs Claude Code (D190).
+    fn tab_runs_claude(&self, id: u64) -> bool {
+        let Some(address) = self.tabs.iter().find(|t| t.session.id() == id).filter(|t| t.agent.is_none()).and_then(|t| t.session.address()) else { return false };
+        self.hc_terminals.iter().any(|t| t.address == address && t.state != "finished" && model::runs_claude(t))
+    }
+
+    /// Bring the selected project's tabs to the shared set (T4): attach every Claude session that is
+    /// not hidden, detach the workers other than the kept one, and put the tabs in order.
+    fn sync_tabs(&mut self) {
+        let project = self.selected_project;
+        if project >= self.projects.len() { return; }
+        let wanted: Vec<String> = model::lines(&self.agents, project)
+            .iter()
+            .filter(|l| l.agent.is_orchestrator() && !self.hidden.contains(&l.agent.address))
+            .map(|l| l.agent.address.clone())
+            .filter(|addr| !self.tabs.iter().any(|t| t.agent.as_deref() == Some(addr.as_str())))
+            .collect();
+        for address in wanted {
+            self.attach_agent(address);
+        }
+        let slots: Vec<usize> = self.tabs.iter().enumerate().filter(|(_, t)| t.project == project).map(|(i, _)| i).collect();
+        let kinds: Vec<tabs::Kind> = slots.iter().map(|i| self.tab_kind(&self.tabs[*i])).collect();
+        let order = tabs::order(&kinds, self.projects[project].last_worker.as_deref());
+        // Workers that are not kept detach (the tab is not owned: its terminal lives on).
+        let mut taken: Vec<Option<Tab>> = slots.iter().rev().map(|i| Some(self.tabs.remove(*i))).collect();
+        taken.reverse();
+        let mut ordered: Vec<Tab> = order.iter().filter_map(|i| taken[*i].take()).collect();
+        for t in taken.into_iter().flatten() {
+            t.session.close();
+        }
+        for (slot, t) in slots.iter().zip(ordered.drain(..)) {
+            self.tabs.insert(*slot, t);
+        }
     }
 
     fn select_tab(&mut self, id: u64) {
         let Some(project) = self.tabs.iter().find(|t| t.session.id() == id).map(|t| t.project) else { return };
+        // A worker's tab becomes the project's kept worker, a Claude session's drops it, a plain tab
+        // keeps it (T4).
+        let kept = match self.tabs.iter().find(|t| t.session.id() == id).map(|t| self.tab_kind(t)) {
+            Some(tabs::Kind::Worker(a)) => Some(Some(a.to_owned())),
+            Some(tabs::Kind::Claude(_)) => Some(None),
+            _ => None,
+        };
+        if let Some(kept) = kept { self.projects[project].last_worker = kept; }
         // Selecting a plain tab clears the agent selection; an agent's tab sets it.
         self.selected_agent = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| t.agent.clone());
         // A split belongs to one project: a tab of another project takes the whole panel.
@@ -474,6 +558,7 @@ impl App {
         // The find bar belongs to one terminal: another tab starts clean.
         if self.active != Some(id) { self.find.close(); }
         self.active = Some(id);
+        self.sync_tabs();
     }
 
     fn select_project(&mut self, project: usize) {
@@ -484,6 +569,7 @@ impl App {
             Some(id) => self.select_tab(id),
             None => { self.split = None; self.active = None; self.find.close(); }
         }
+        self.sync_tabs();
         self.save_projects();
     }
 
@@ -507,6 +593,8 @@ impl App {
         // Dropping a local session closes the PTY (the shell gets SIGHUP). An hc terminal we made is
         // killed and removed; an agent's tab (`agent` is set) only detaches.
         self.tabs[i].session.close();
+        // A closed Claude session stays out of the set until it is selected in the sidebar.
+        if let Some(address) = self.tabs[i].agent.clone() { self.hidden.insert(address); }
         let siblings: Vec<u64> = self.project_tabs(project).map(|t| t.session.id()).collect();
         let pos = siblings.iter().position(|s| *s == id).unwrap_or(0);
         // Closing either pane's terminal un-splits; the other one stays.
@@ -782,6 +870,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.waker = Some(waker.clone());
     if rune::is_headless() {
         s.plans.read_now();
+        s.host.fix_from_env();
     }
     start_hc(s, waker.clone());
     // A headless run cannot wait for the watcher: take the first listing now.
@@ -790,7 +879,8 @@ fn setup(s: &mut App, waker: Waker) {
             s.set_terminals(list, HashMap::new());
         }
     }
-    if s.tabs.is_empty() && !s.projects.is_empty() {
+    // Claude sessions attached by the first listing do not count: the plain tabs of the last run still come back.
+    if !s.tabs.iter().any(|t| t.agent.is_none()) && !s.projects.is_empty() {
         match s.hc_dialer.clone() {
             // With hc the tabs of the last run come back; the listing decides whether a new one opens.
             Some(d) if rune::is_headless() => s.restore_tabs(restore::list(&d)),
@@ -890,6 +980,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
     }
     changed |= s.gh.poll(&s.agents, s.focused, s.waker.as_ref());
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
+    changed |= s.host.poll(s.focused, tx);
     changed |= s.context.poll(s.selected_agent.as_deref(), s.focused, tx);
     changed |= s.session.poll(s.selected_agent.as_deref(), s.focused, s.waker.as_ref(), tx);
     changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);
