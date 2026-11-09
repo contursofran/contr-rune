@@ -48,3 +48,57 @@ pub fn pr_head(dir: &Path, pr: i64) -> Result<String, String> {
         _ => Err(format!("pull request {pr} has no head commit")),
     }
 }
+
+/// `owner/repo` of a GitHub remote URL (`<user>@github.com:o/r.git`, `https://github.com/o/r`).
+pub fn parse_remote(url: &str) -> Option<String> {
+    let path = url.trim().split_once("github.com").map(|(_, p)| p)?;
+    let path = path.strip_prefix([':', '/'])?.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path.split_once('/')?;
+    let ok = |s: &str| !s.is_empty() && !s.contains('/');
+    (ok(owner) && ok(repo)).then(|| path.to_owned())
+}
+
+/// `owner/repo` of the `origin` remote of the repo at `dir`, read from its config file (no
+/// `git` binary; a worktree's `.git` file leads to the main repo's config). `None` without a
+/// GitHub `origin`.
+pub fn origin_repo(dir: &Path) -> Option<String> {
+    let dot = dir.join(".git");
+    let mut base = dot.clone();
+    if dot.is_file() {
+        let text = std::fs::read_to_string(&dot).ok()?;
+        let target = Path::new(text.trim().strip_prefix("gitdir:")?.trim()).to_path_buf();
+        base = if target.is_absolute() { target } else { dir.join(target) };
+        if let Ok(common) = std::fs::read_to_string(base.join("commondir")) {
+            base = base.join(common.trim());
+        }
+    }
+    let config = std::fs::read_to_string(base.join("config")).ok()?;
+    let mut in_origin = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_origin = line.replace(' ', "") == "[remote\"origin\"]";
+        } else if in_origin && let Some(url) = line.strip_prefix("url").and_then(|r| r.trim_start().strip_prefix('=')) {
+            return parse_remote(url);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remotes_parse_to_owner_and_repo() {
+        for (url, want) in [
+            ("git@github.com:contursofran/contr.git", Some("contursofran/contr")),
+            ("https://github.com/contursofran/contr", Some("contursofran/contr")),
+            ("https://github.com/o/r.git/", Some("o/r")),
+            ("https://gitlab.com/o/r.git", None),
+            ("https://github.com/o", None),
+        ] {
+            assert_eq!(parse_remote(url).as_deref(), want, "{url}");
+        }
+    }
+}

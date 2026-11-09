@@ -8,14 +8,15 @@
 //! Elements: `notch` (and `notch/label`), `qcard`, `qcard/tabs`, `qcard/item/<ID>`,
 //! `qcard/option/<ID>/<i>` (`i` counts the options as shown, the recommended one is 0),
 //! `qcard/input`, `qcard/send`, `qcard/done/<ID>`, `qcard/open/<address>`, `qcard/error`, `qcard/prompt/<address>` (with `/detail` and `/question`),
-//! `qcard/choice/<address>/<n>` (`n` from 1).
+//! `qcard/choice/<address>/<n>` (`n` from 1), `qcard/impact/<ID>/<i>` (under option `i`),
+//! `qcard/context/<ID>` (the collapsed Context), `qcard/source/<ID>`, `qcard/ref/<ID>/<i>`.
 //!
 //! Answering writes `owner.json` first, then tells the question's coordinator terminal
 //! (`Owner answered D7: <answer>`). A failed send leaves the answer saved and shows the error.
 
 use rune::{Cursor, El, Key, KeyEvent, TextEdit, Tx, col, row, spacer, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Kit, Placement, SegmentedControl, TextInput, popover,
+    Button, ButtonVariant, Collapsible, ControlSize, Kit, Placement, SegmentedControl, TextInput, popover,
 };
 
 use crate::App;
@@ -93,6 +94,8 @@ pub struct Card {
     pub menu: Option<Menu>,
     /// A choice is on its way to the agent.
     pub busy: bool,
+    /// The shown question's Context section is open.
+    pub context: bool,
 }
 
 /// What the card knows of a blocked agent's screen.
@@ -108,6 +111,7 @@ pub struct Menu {
 impl Card {
     fn reset_answer(&mut self) {
         self.pick = None;
+        self.context = false;
         self.edit = TextEdit::new("");
     }
 }
@@ -142,20 +146,65 @@ pub fn items(s: &App) -> Vec<Item> {
     blocked.chain(questions).chain(todos).collect()
 }
 
+/// The indices into `q.options` in the order shown: the recommended one first.
+fn shown_order(q: &Question) -> Vec<usize> {
+    let first = q.recommended.filter(|i| *i < q.options.len());
+    first
+        .into_iter()
+        .chain((0..q.options.len()).filter(|i| Some(*i) != first))
+        .collect()
+}
+
 /// The options of `q` in the order shown: the recommended one first.
 pub fn shown_options(q: &Question) -> Vec<&str> {
-    let first = q.recommended.filter(|i| *i < q.options.len());
-    let rest = q
-        .options
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| Some(*i) != first)
-        .map(|(_, o)| o.as_str());
-    first
-        .map(|i| q.options[i].as_str())
+    shown_order(q)
         .into_iter()
-        .chain(rest)
+        .map(|i| q.options[i].as_str())
         .collect()
+}
+
+/// What a ref of a question does when pressed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ref {
+    /// Opens this URL in the browser.
+    Link(String),
+    /// Plain dimmed text (a file path, or `#N` without a GitHub `origin`).
+    Dim,
+}
+
+/// A ref as the card shows it: `http(s)://` opens as is; `#N`, `issue N` and `issue #N` open
+/// `https://github.com/<repo>/issues/N` (GitHub sends a pull request there on to `/pull/N`),
+/// or stay dim when `repo` (the project's `origin`) is unknown; anything else is dim.
+pub fn classify_ref(r: &str, repo: Option<&str>) -> Ref {
+    let r = r.trim();
+    if r.starts_with("https://") || r.starts_with("http://") {
+        return Ref::Link(r.to_owned());
+    }
+    let number = r.strip_prefix('#').or_else(|| {
+        let rest = r.get(..5).filter(|w| w.eq_ignore_ascii_case("issue")).map(|_| &r[5..])?;
+        let rest = rest.trim_start();
+        Some(rest.strip_prefix('#').unwrap_or(rest))
+    });
+    match (number, repo) {
+        (Some(n), Some(repo)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            Ref::Link(format!("https://github.com/{repo}/issues/{n}"))
+        }
+        _ => Ref::Dim,
+    }
+}
+
+/// Open `url` in the browser. With `CONTR_OPEN_LOG` set (tests) the URL is appended to that
+/// file instead, so no run opens a browser.
+fn open_link(tx: &mut Tx, url: &str) {
+    if let Some(log) = std::env::var_os("CONTR_OPEN_LOG") {
+        use std::io::Write;
+        let file = std::fs::OpenOptions::new().append(true).create(true).open(log);
+        if let Ok(mut f) = file {
+            let _ = writeln!(f, "{url}");
+        }
+    } else if let Err(e) = tx.open_url(url) {
+        eprintln!("contr: {e}");
+    }
 }
 
 fn counts(items: &[Item]) -> (usize, usize, usize) {
@@ -617,6 +666,8 @@ pub fn card(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .role("dialog")
         .label("Questions")
         .w(NOTCH_OPEN_WIDTH)
+        // A press on text inside the card is not a press on the scrim.
+        .on_press(|_: &mut App| {})
         .child(body)
         .child(footer);
     let surface = popover::raised(k, content, crate::theme::RADIUS_12);
@@ -677,6 +728,45 @@ fn menu_view(k: &Kit, address: &str, p: &Prompt) -> El {
     view
 }
 
+/// The collapsed "Context" section of a question: its source and its refs.
+fn context_view(k: &Kit, s: &App, q: &Question) -> El {
+    let c = &k.c;
+    let repo = s
+        .projects
+        .get(s.selected_project)
+        .and_then(|p| crate::github::origin_repo(&p.path));
+    let mut section = Collapsible::new("Context", s.card.context)
+        .on_toggle(|s: &mut App| s.card.context = !s.card.context);
+    if !q.source.is_empty() {
+        section = section.child(
+            text(format!("Source: {}", q.source))
+                .font(k.ty.text_small)
+                .color(c.text_faint)
+                .w_full()
+                .key(format!("qcard/source/{}", q.id)),
+        );
+    }
+    for (i, r) in q.refs.iter().enumerate() {
+        let key = format!("qcard/ref/{}/{i}", q.id);
+        section = section.child(match classify_ref(r, repo.as_deref()) {
+            Ref::Link(url) => row().w_full().child(
+                Button::new(r.as_str())
+                    .variant(ButtonVariant::Ghost)
+                    .control_size(ControlSize::Small)
+                    .on_press_tx(move |_: &mut App, tx: &mut Tx| open_link(tx, &url))
+                    .build(k)
+                    .key(key),
+            ),
+            Ref::Dim => text(r.clone())
+                .font(k.ty.text_small)
+                .color(c.text_faint)
+                .w_full()
+                .key(key),
+        });
+    }
+    section.build(k).w_full().key(format!("qcard/context/{}", q.id))
+}
+
 fn item_view(k: &Kit, s: &App, item: &Item) -> El {
     let c = &k.c;
     let heading = |meta: String| {
@@ -735,7 +825,8 @@ fn item_view(k: &Kit, s: &App, item: &Item) -> El {
                 ))
                 .child(body_text(&q.question));
             let recommended = q.recommended.and_then(|i| q.options.get(i));
-            for (i, option) in shown_options(q).into_iter().enumerate() {
+            for (i, original) in shown_order(q).into_iter().enumerate() {
+                let option = q.options[original].as_str();
                 let picked = s.card.pick.as_deref() == Some(option);
                 let marked = i == 0 && recommended.is_some();
                 let (number, text_) = (i + 1, option.to_owned());
@@ -764,6 +855,19 @@ fn item_view(k: &Kit, s: &App, item: &Item) -> El {
                     .w_full()
                     .key(format!("qcard/option/{}/{i}", q.id));
                 view = view.child(button);
+                if let Some(impact) = q.impacts.get(original).filter(|t| !t.is_empty()) {
+                    view = view.child(
+                        text(impact.clone())
+                            .font(k.ty.text_small)
+                            .color(c.text_faint)
+                            .w_full()
+                            .pl(12.0)
+                            .key(format!("qcard/impact/{}/{i}", q.id)),
+                    );
+                }
+            }
+            if !q.source.is_empty() || !q.refs.is_empty() {
+                view = view.child(context_view(k, s, q));
             }
             let input = TextInput::new(&s.card.edit)
                 .placeholder("Or type an answer")
@@ -845,5 +949,36 @@ mod tests {
             "an index out of range is ignored"
         );
         assert!(shown_options(&q(&[], Some(0))).is_empty());
+    }
+
+    #[test]
+    fn refs_open_links_or_stay_dim() {
+        let repo = Some("o/r");
+        let link = |u: &str| Ref::Link(u.to_owned());
+        for (r, repo, want) in [
+            ("#12", repo, link("https://github.com/o/r/issues/12")),
+            ("issue 12", repo, link("https://github.com/o/r/issues/12")),
+            ("Issue #12", repo, link("https://github.com/o/r/issues/12")),
+            ("https://x.dev/a?b=1", None, link("https://x.dev/a?b=1")),
+            ("#12", None, Ref::Dim),
+            ("issue 12", None, Ref::Dim),
+            ("#abc", repo, Ref::Dim),
+            ("#", repo, Ref::Dim),
+            ("issues", repo, Ref::Dim),
+            ("src/notch.rs", repo, Ref::Dim),
+            ("ééééé", repo, Ref::Dim),
+        ] {
+            assert_eq!(classify_ref(r, repo), want, "{r}");
+        }
+    }
+
+    #[test]
+    fn the_shown_order_keeps_the_original_indices() {
+        let q = Question {
+            options: vec!["a".into(), "b".into(), "c".into()],
+            recommended: Some(2),
+            ..Question::default()
+        };
+        assert_eq!(shown_order(&q), [2, 0, 1]);
     }
 }
