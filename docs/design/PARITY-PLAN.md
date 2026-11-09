@@ -382,3 +382,13 @@ coordinator defaults for Q3, Q6, Q7, Q9, Q10, Q11, Q12, Q13, Q14 (as recommended
   Q9 glass later; Q10 build Roles (C7) then Flow (C8); Q11 R0 allowed as an exception; Q12 ⌘C only, drag + double-click word;
   Q13 do not build board/worker panel/PR viewer; Q14 "this Mac" only.
 - Q8 override: the owner asked for in-app update notices, so R3 (update check, pill, toast, install and restart) stays.
+
+## Owner answers, round 2 (2026-11-09, night)
+
+- Overnight flow: merge each PR on green CI plus the headless checks; the owner tests merged parts in a real window
+  in the morning, and fixes become new PRs.
+- Q15: **ed25519 signature.** The release job signs the zip with a private key stored as a GitHub secret; the app
+  embeds the public key and rejects a download that does not verify.
+- Q16: **Yes, all of it.** Binary `contr-rune`, plugin name stays `contr`. When D11 is done, uninstall Go contr's
+  plugin on this Mac and install rune's kit.
+- Q17 (default): kit agents stay Claude-only, as in Go. Q18 (default): do not port `agents watch`.
