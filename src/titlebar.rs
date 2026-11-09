@@ -40,8 +40,6 @@ pub(crate) fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>)
         let item = match s.tab_agent(*id) {
             // An agent's tab: its title and state glyph (H6) replace the terminal title and prompt icon.
             Some(a) => TabItem::new(tab_id(*id), a.display_title().to_owned()).avatar(sidebar::agent_glyph(k, a, a.orchestrates(&s.agents))),
-            // A plain terminal that runs Claude (D190): its title, the grey Claude mark.
-            None if s.tab_runs_claude(*id) => TabItem::new(tab_id(*id), title.as_str()).avatar(sidebar::plain_claude_glyph(k, s.status(*id) == Status::Working)),
             None => TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status),
         };
         // A secondary press opens the tab's menu (T3).

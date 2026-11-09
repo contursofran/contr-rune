@@ -229,12 +229,6 @@ pub fn agent_glyph(k: &Kit, a: &Agent, orchestrates: bool) -> El {
     }
 }
 
-/// The mark of a plain terminal that runs Claude (D190): always grey, turning while it works.
-pub fn plain_claude_glyph(k: &Kit, working: bool) -> El {
-    let mark = icon(&CLAUDE, 16.0).key("glyph").label(if working { "working" } else { "idle" }.to_owned()).color(k.c.text_faint);
-    if working { mark.looping(LoopSpec::rotation(2.4)) } else { mark.opacity(0.45) }
-}
-
 /// The open sidebar menus. The agent menu (A1): the row it belongs to, where it opened, and
 /// whether that agent's branch has a pull request (`None` until `gh` answered). The Projects `+`
 /// menu is open (A3). The menu of an empty project (A3): its index and where it opened.
@@ -463,7 +457,7 @@ pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
             list = list.child(agent_row(k, s, &line));
         }
         // An agent's tab is shown by its agent row only.
-        for t in s.project_tabs(i).filter(|t| t.agent.is_none()) {
+        for t in s.project_tabs(i).filter(|t| s.tab_agent_address(t).is_none()) {
             list = list.child(terminal_row(k, s, t));
         }
     }

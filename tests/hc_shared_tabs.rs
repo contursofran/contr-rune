@@ -3,6 +3,7 @@
 //! is `t-2`; a worker's tab (t17 is `t-3`, t18 `t-4`) joins between them while it is the kept worker.
 //! Claude sessions come first, the set does not change with the selection, a plain tab keeps the last
 //! worker, a Claude session's tab drops it, and a session that does not orchestrate has a grey mark.
+//! A plain terminal that runs Claude has a sidebar row, and the row selects the terminal's own tab.
 
 mod common;
 
@@ -62,10 +63,28 @@ fn a_plain_terminal_running_claude_is_a_session_and_comes_before_the_plain_ones(
         t20["foreground"] = json!({"pid": 204, "name": "claude", "argv": [], "cwd": "/tmp/contr"});
     };
     let r = run_with(edit, vec![]);
-    // Restore opens t21 (`t-2`) before t20 (`t-3`); the set puts the Claude one first among the plain ones.
-    assert_eq!(r.tabs(), vec!["t-1", "t-3", "t-2"], "{:?}", r.log);
-    assert!(grey(glyph_color(&r, "/t-3/")), "the Claude mark of a plain terminal is grey: {:?}", glyph_color(&r, "/t-3/"));
-    assert!(!r.find("t-2").unwrap().to_string().contains("\"glyph\""), "a plain shell keeps the prompt icon");
+    // t20 is a Claude tab (`t-2`) as soon as the agents are known, so restore does not open it again;
+    // the plain shell t21 (`t-3`) follows it.
+    assert_eq!(r.tabs(), vec!["t-1", "t-2", "t-3"], "{:?}", r.log);
+    assert!(grey(glyph_color(&r, "/t-2/")), "the Claude mark of a plain terminal is grey: {:?}", glyph_color(&r, "/t-2/"));
+    assert!(!r.find("t-3").unwrap().to_string().contains("\"glyph\""), "a plain shell keeps the prompt icon");
+    // It has a sidebar row with the grey mark, and its terminal row is gone.
+    assert!(grey(glyph_color(&r, "/agent/t20/")), "{:?}", glyph_color(&r, "/agent/t20/"));
+    assert!(r.has("agent/t20") && r.has("term-3") && !r.has("term-2"), "{:?}", r.keys("row"));
+    assert_eq!(r.attaches("t20").len(), 1, "one tab for it: {:?}", r.log);
+}
+
+#[test]
+fn the_row_of_a_plain_terminal_running_claude_selects_its_tab() {
+    let edit = |ts: &mut Vec<Value>| {
+        let t20 = ts.iter_mut().find(|t| t["address"] == "t20").unwrap();
+        t20["foreground"] = json!({"pid": 204, "name": "claude", "argv": [], "cwd": "/tmp/contr"});
+    };
+    let r = run_with(edit, vec![tap(0.5, "t-2"), tap(0.9, "agent/t20")]);
+    // t-3 is the fresh plain tab that opens when only Claude sessions are there.
+    assert_eq!(r.tabs(), vec!["t-1", "t-2", "t-3"], "no tab is added for the row: {:?}", r.log);
+    assert_eq!(r.active_tab(), "t-2", "{:?}", r.log);
+    assert!(r.selected("agent/t20"));
 }
 
 #[test]

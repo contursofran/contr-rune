@@ -4,7 +4,8 @@
 //!
 //! A terminal is an agent row when it carries `contr=agent` and a role other than `terminal`, or
 //! when it is foreign (no `contr=agent`) and Claude runs in it (then it counts as an orchestrator,
-//! C5). Plain terminals and this app's own tabs (`role=terminal`) are not agents.
+//! C5). Plain terminals and this app's own tabs (`role=terminal`) are not agents, except while
+//! Claude Code is their foreground program (D190).
 //!
 //! The project of an agent: the `project` label when it names an open project, else the open
 //! project whose folder holds the agent's `worktree` label (else `cwd`), the deepest one winning,
@@ -83,10 +84,15 @@ fn is_version(s: &str) -> bool {
     s.contains('.') && s.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Claude Code is the foreground program of `t`: `claude` or a version number (`2.1.30`).
+pub fn claude_in_front(t: &Terminal) -> bool {
+    t.foreground.as_ref().is_some_and(|f| f.name == "claude" || is_version(&f.name))
+}
+
 /// Claude runs in `t`: foreground `claude` or a version number (`2.1.30`), argv[0] `claude`, or it
 /// has reported a status.
 pub fn runs_claude(t: &Terminal) -> bool {
-    let fg = t.foreground.as_ref().is_some_and(|f| f.name == "claude" || is_version(&f.name));
+    let fg = claude_in_front(t);
     let argv0 = t.argv.first().is_some_and(|a| Path::new(a).file_name().is_some_and(|n| n == "claude"));
     fg || argv0 || t.status.is_some()
 }
@@ -124,6 +130,9 @@ pub fn derive(terminals: &[Terminal], stamps: &HashMap<String, u64>, known: &[Kn
         let ours = label(t, "contr") == Some("agent");
         let role = if ours {
             match label(t, "role") {
+                // A plain terminal is no agent, but while Claude Code is its foreground it is a
+                // session (D190). Only the foreground counts: the status can outlive Claude.
+                Some("terminal") if claude_in_front(t) && t.state != "finished" => "orchestrator".to_owned(),
                 Some("terminal") => continue,
                 Some(r) => r.to_owned(),
                 None => "worker".to_owned(),
@@ -418,6 +427,33 @@ mod tests {
         let a = run(&ts, 10);
         assert_eq!(a.iter().map(|a| a.address.as_str()).collect::<Vec<_>>(), vec!["t3"]);
         assert!(!a[0].foreign);
+    }
+
+    #[test]
+    fn a_plain_terminal_is_a_session_only_while_claude_is_its_foreground() {
+        // (foreground, state, status, is a session?) for a terminal of this app with role `terminal`.
+        let table: &[(Option<&str>, &str, bool, bool)] = &[
+            (Some("claude"), "live", false, true),
+            (Some("2.1.30"), "live", false, true),
+            (Some("zsh"), "live", false, false),
+            (None, "live", false, false),
+            // The status can outlive Claude Code: only the foreground counts.
+            (Some("zsh"), "live", true, false),
+            (Some("claude"), "finished", false, false),
+        ];
+        for (fg, state, with_status, want) in table {
+            let mut x = agent_t("t1", 1, "terminal", "a");
+            x.state = (*state).into();
+            x.foreground = fg.map(|n| Foreground { name: n.into(), ..Foreground::default() });
+            if *with_status {
+                x.status = status("idle", None);
+            }
+            let a = run(&[x], 10);
+            assert_eq!(!a.is_empty(), *want, "{fg:?} {state} status={with_status}");
+            if *want {
+                assert!(a[0].is_orchestrator() && !a[0].foreign && !a[0].orchestrates(&a), "grey until it orchestrates");
+            }
+        }
     }
 
     #[test]
