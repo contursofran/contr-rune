@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use crate::agents_config::{Config, flag_value};
 use crate::hc::conn::Conn;
 use crate::hc::wire::Terminal;
+use crate::{github, prompt};
 
 /// How long a call to the core may take. `terminal.run` does not wait for the program.
 const CALL: Duration = Duration::from_secs(30);
@@ -186,6 +187,145 @@ pub fn list(conn: &Conn, all: bool) -> Result<Vec<Worker>, String> {
     }
     workers.sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
     Ok(workers)
+}
+
+/// The params of a call that looks at, acts on or sends to a terminal. Inside hc they name this
+/// terminal as the `caller`: when it is the worker's parent, hc counts the worker's news as seen
+/// and types no note about it into the parent.
+fn looking(name: &str, caller: &str) -> Value {
+    let mut params = json!({"terminal": name});
+    if !caller.is_empty() {
+        params["caller"] = json!(caller);
+    }
+    params
+}
+
+fn call(conn: &Conn, method: &str, params: Value) -> Result<Value, String> {
+    conn.call(method, params, CALL).map_err(|e| e.to_string())
+}
+
+/// Types `text` into a worker and presses Enter. Blank text is an error (hc would still submit
+/// its sender tag, an empty message), and so is a send hc refuses.
+pub fn send(conn: &Conn, caller: &str, name: &str, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("agents: no text to send".into());
+    }
+    let mut params = looking(name, caller);
+    params["text"] = json!(text);
+    let res = call(conn, "terminal.send", params)?;
+    if res["sent"] == json!(false) {
+        let reason = res["reason"].as_str().filter(|r| !r.is_empty()).unwrap_or("no reason given");
+        return Err(format!("agents: {name} did not take the text: {reason}"));
+    }
+    Ok(())
+}
+
+/// Presses a worker's stop key. The outcome is hc's: `stopped`, `exited`, `still_working` or
+/// `unknown`.
+pub fn interrupt(conn: &Conn, caller: &str, name: &str) -> Result<String, String> {
+    let res = call(conn, "terminal.interrupt", looking(name, caller))?;
+    Ok(res["outcome"].as_str().unwrap_or_default().to_owned())
+}
+
+/// One worker by name or address.
+fn get(conn: &Conn, caller: &str, name: &str) -> Result<Worker, String> {
+    Ok(Worker::from(&terminal_of(call(conn, "terminal.get", looking(name, caller))?)?))
+}
+
+/// Deletes a finished terminal from hc. hc refuses a live one.
+pub fn remove(conn: &Conn, caller: &str, name: &str) -> Result<(), String> {
+    call(conn, "terminal.rm", looking(name, caller)).map(drop)
+}
+
+/// Ends a worker's program, then removes its terminal. With `keep` the finished terminal stays
+/// for reading. A terminal that already finished is not killed again.
+pub fn stop(conn: &Conn, caller: &str, name: &str, keep: bool) -> Result<(), String> {
+    if get(conn, caller, name)?.live {
+        call(conn, "terminal.kill", looking(name, caller))?;
+    }
+    if keep { Ok(()) } else { remove(conn, caller, name) }
+}
+
+/// Removes the finished workers that `caller` started (those whose parent it is). Orchestrators,
+/// plain terminals and other coordinators' workers stay; outside hc (no `caller`) nothing goes.
+/// Returns the names removed, and the error that stopped the removal, if any.
+pub fn remove_ended(conn: &Conn, caller: &str) -> (Vec<String>, Option<String>) {
+    let mut removed = Vec::new();
+    if caller.is_empty() {
+        return (removed, None);
+    }
+    let workers = match list(conn, true) {
+        Ok(w) => w,
+        Err(e) => return (removed, Some(e)),
+    };
+    for w in workers.iter().filter(|w| !w.live && w.role != "orchestrator" && w.role != "terminal" && w.parent == caller) {
+        if let Err(e) = remove(conn, caller, &w.address) {
+            return (removed, Some(format!("remove {}: {e}", w.name)));
+        }
+        removed.push(w.name.clone());
+    }
+    (removed, None)
+}
+
+/// A worker's screen and history; `lines > 0` keeps only the last lines.
+pub fn read(conn: &Conn, caller: &str, name: &str, lines: i64) -> Result<String, String> {
+    let mut params = looking(name, caller);
+    if lines > 0 {
+        params["lines"] = json!(lines);
+    }
+    Ok(call(conn, "terminal.read", params)?["text"].as_str().unwrap_or_default().to_owned())
+}
+
+/// What `agents prompt` prints when the worker waits on no menu.
+const NO_PROMPT: &str = "no prompt";
+
+/// How many terminal lines `pending_prompt` reads to find the menu.
+const PROMPT_LINES: i64 = 40;
+
+/// The menu a blocked worker waits on: the detail, the question and the numbered choices; or
+/// `no prompt` when it is not blocked or its screen has no menu we can read.
+pub fn pending_prompt(conn: &Conn, caller: &str, name: &str) -> Result<String, String> {
+    let w = get(conn, caller, name)?;
+    if !w.live || w.status != "blocked" {
+        return Ok(NO_PROMPT.into());
+    }
+    let screen = read(conn, caller, name, PROMPT_LINES)?;
+    let Some(p) = prompt::parse(&w.command, &w.kind, &screen) else { return Ok(NO_PROMPT.into()) };
+    let mut out: Vec<String> = p.detail;
+    out.push(p.question);
+    out.extend(p.choices.iter().enumerate().map(|(i, c)| format!("{}. {c}", i + 1)));
+    Ok(out.join("\n").trim_end_matches('\n').to_owned())
+}
+
+/// Runs git in `dir`: its trimmed stdout, or `git <verb>: <stderr>`.
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| format!("git {}: {e}", args[0]))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned());
+    }
+    let msg = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    Err(format!("git {}: {}", args[0], if msg.is_empty() { out.status.to_string() } else { msg }))
+}
+
+/// A detached worktree at the head of pull request `pr` of the repository at `repo` (any of its
+/// checkouts): `<main checkout>-wt/review-<pr>`. An existing one moves to the new head.
+pub fn review_worktree(repo: &str, pr: i64) -> Result<String, String> {
+    if pr <= 0 {
+        return Err("agents: a pull request number is positive".into());
+    }
+    let common = git(Path::new(repo), &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let main = main_checkout(&common).ok_or_else(|| format!("agents: {repo} has no main checkout (git folder {common})"))?;
+    let sha = github::pr_head(&main, pr).map_err(|e| format!("agents: pull request {pr}: {e}"))?;
+    if git(&main, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_err() {
+        git(&main, &["fetch", "--quiet", "origin", &format!("refs/pull/{pr}/head")])?;
+    }
+    let dir = PathBuf::from(format!("{}-wt/review-{pr}", main.display()));
+    if dir.exists() {
+        git(&dir, &["checkout", "--quiet", "--detach", &sha])?;
+    } else {
+        git(&main, &["worktree", "add", "--quiet", "--detach", &dir.display().to_string(), &sha])?;
+    }
+    Ok(dir.display().to_string())
 }
 
 /// A terminal record from the core. A `null` field (a run without `cwd`, say) counts as absent.

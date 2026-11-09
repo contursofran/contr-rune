@@ -1,5 +1,6 @@
-//! `contr-rune agents ls | spawn | flow` (PARITY-PLAN K4; Go: cmd/contr/agents.go). Exit codes:
-//! 0 ok, 1 error, 2 usage. The other subcommands arrive with D4b.
+//! `contr-rune agents ls | spawn | send | interrupt | stop | rm | read | prompt | flow`
+//! (PARITY-PLAN K4; Go: cmd/contr/agents.go; `watch` is left out). Exit codes: 0 ok, 1 error, 2
+//! usage.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -17,10 +18,23 @@ const USAGE: &str = "\
 Usage:
   contr-rune agents ls [--all] [--json]            list the workers
   contr-rune agents spawn --name N --profile P [--issue I] [--worktree DIR] [--project P]
-                     [--role R] [--no-parent] [--json]
+                     [--role R] [--review-pr PR] [--no-parent] [--json]
                      [--task-file F | [--] task…]
                                                    start a worker; --task-file reads the
-                                                   task from a file
+                                                   task from a file; --review-pr makes a
+                                                   detached worktree at the PR's head
+                                                   (<main>-wt/review-<PR>) of the repository
+                                                   at --worktree (default: here) and starts
+                                                   the worker there
+  contr-rune agents send <name> <text…>            type text and press Enter
+  contr-rune agents interrupt <name>               press the stop key
+  contr-rune agents stop <name> [--keep]           end the worker's program and remove its
+                                                   terminal; --keep leaves the finished one
+  contr-rune agents rm <name>                      remove a finished worker's terminal
+  contr-rune agents rm --ended                     remove all finished workers that this
+                                                   terminal started
+  contr-rune agents read <name> [--lines N]        print the screen and history
+  contr-rune agents prompt <name>                  print the menu a blocked worker waits on, or \"no prompt\"
   contr-rune agents flow                           print the flow: how the orchestrator takes an issue to a merge
 
 Flags can come before or after the other arguments. After --, every word is
@@ -61,7 +75,7 @@ impl Env {
 }
 
 /// `(name, takes a value, subcommands it applies to)`.
-const FLAGS: [(&str, bool, &[&str]); 10] = [
+const FLAGS: [(&str, bool, &[&str]); 14] = [
     ("all", false, &["ls"]),
     ("json", false, &["ls", "spawn"]),
     ("name", true, &["spawn"]),
@@ -72,7 +86,14 @@ const FLAGS: [(&str, bool, &[&str]); 10] = [
     ("role", true, &["spawn"]),
     ("no-parent", false, &["spawn"]),
     ("task-file", true, &["spawn"]),
+    ("review-pr", true, &["spawn"]),
+    ("keep", false, &["stop"]),
+    ("ended", false, &["rm"]),
+    ("lines", true, &["read"]),
 ];
+
+/// The flags that take a whole number, as Go's `flag.Int`.
+const INT_FLAGS: [&str; 2] = ["review-pr", "lines"];
 
 /// The flags and the other arguments of one subcommand call.
 #[derive(Debug, Default, PartialEq)]
@@ -88,6 +109,11 @@ impl Parsed {
 
     fn text(&self, name: &str) -> String {
         self.flags.get(name).cloned().unwrap_or_default()
+    }
+
+    /// The value of a whole-number flag (checked in `parse`); 0 when absent.
+    fn int(&self, name: &str) -> i64 {
+        self.flags.get(name).and_then(|v| v.parse().ok()).unwrap_or(0)
     }
 }
 
@@ -124,6 +150,9 @@ fn parse(sub: &str, args: &[String]) -> Result<Parsed, String> {
                 _ => return Err(format!("invalid boolean value {v:?} for -{flag}")),
             },
         };
+        if INT_FLAGS.contains(&flag) && value.parse::<i64>().is_err() {
+            return Err(format!("invalid value {value:?} for flag -{flag}: parse error"));
+        }
         parsed.flags.insert(flag, value);
     }
     parsed.pos.extend(tail.iter().cloned());
@@ -212,7 +241,7 @@ pub fn run(args: &[String], env: &Env, out: &mut impl Write, err: &mut impl Writ
             }
             Err(e) => fail(err, &format!("contr-rune agents: {e}")),
         },
-        "ls" | "spawn" => {
+        "ls" | "spawn" | "send" | "interrupt" | "stop" | "rm" | "read" | "prompt" => {
             let parsed = match parse(sub, rest) {
                 Ok(p) => p,
                 Err(e) => {
@@ -220,20 +249,25 @@ pub fn run(args: &[String], env: &Env, out: &mut impl Write, err: &mut impl Writ
                     return 2;
                 }
             };
-            if sub == "ls" && !parsed.pos.is_empty() {
-                let _ = write!(err, "contr-rune agents ls: wrong number of arguments\n{USAGE}");
+            let wrong = match sub {
+                "spawn" => false,
+                "send" => parsed.pos.len() < 2,
+                "interrupt" | "stop" | "read" | "prompt" => parsed.pos.len() != 1,
+                _ => sub == "ls" && !parsed.pos.is_empty(),
+            };
+            if wrong {
+                let _ = write!(err, "contr-rune agents {sub}: wrong number of arguments\n{USAGE}");
                 return 2;
             }
-            let result = if sub == "ls" { ls(&parsed, out) } else { spawn(&parsed, env, out) };
-            match result {
+            if sub == "rm" && (parsed.pos.len() > 1 || parsed.flag("ended") == (parsed.pos.len() == 1)) {
+                let _ = write!(err, "contr-rune agents rm: give one name, or --ended\n{USAGE}");
+                return 2;
+            }
+            match dispatch(sub, &parsed, env, out) {
                 Ok(()) => 0,
                 Err(Failure::Setup(e)) => fail(err, &format!("contr-rune agents: {e}")),
                 Err(Failure::Run(e)) => fail(err, &format!("contr-rune agents {sub}: {e}")),
             }
-        }
-        "send" | "interrupt" | "stop" | "rm" | "read" | "prompt" => {
-            let _ = writeln!(err, "contr-rune agents {sub}: not built yet");
-            2
         }
         other => {
             let _ = write!(err, "contr-rune agents: unknown command {other}\n{USAGE}");
@@ -253,6 +287,35 @@ enum Failure {
     Run(String),
 }
 
+fn dispatch(sub: &str, p: &Parsed, env: &Env, out: &mut impl Write) -> Result<(), Failure> {
+    if sub == "spawn" {
+        return spawn(p, env, out);
+    }
+    let write = |out: &mut dyn Write, text: &str| out.write_all(text.as_bytes()).map_err(|e| Failure::Run(e.to_string()));
+    if sub == "ls" {
+        return ls(p, out);
+    }
+    let (conn, _keep) = connect().map_err(Failure::Setup)?;
+    let (caller, name) = (env.terminal_id.as_str(), p.pos.first().map_or("", String::as_str));
+    let run = Failure::Run;
+    match sub {
+        "send" => agents::send(&conn, caller, name, &p.pos[1..].join(" ")).map_err(run),
+        "interrupt" => write(out, &(agents::interrupt(&conn, caller, name).map_err(run)? + "\n")),
+        "stop" => agents::stop(&conn, caller, name, p.flag("keep")).map_err(run),
+        "prompt" => write(out, &(agents::pending_prompt(&conn, caller, name).map_err(run)? + "\n")),
+        "read" => {
+            let text = agents::read(&conn, caller, name, p.int("lines")).map_err(run)?;
+            write(out, &(text.trim_end_matches('\n').to_owned() + "\n"))
+        }
+        _ if p.flag("ended") => {
+            let (names, error) = agents::remove_ended(&conn, caller);
+            names.iter().try_for_each(|n| write(out, &format!("{n}\n")))?;
+            error.map_or(Ok(()), |e| Err(Failure::Run(e)))
+        }
+        _ => agents::remove(&conn, caller, name).map_err(run),
+    }
+}
+
 fn ls(p: &Parsed, out: &mut impl Write) -> Result<(), Failure> {
     let (conn, _keep) = connect().map_err(Failure::Setup)?;
     let workers = agents::list(&conn, p.flag("all")).map_err(Failure::Run)?;
@@ -262,8 +325,12 @@ fn ls(p: &Parsed, out: &mut impl Write) -> Result<(), Failure> {
 
 fn spawn(p: &Parsed, env: &Env, out: &mut impl Write) -> Result<(), Failure> {
     let cfg = load(env).map_err(Failure::Setup)?;
-    let spec = spec_of(p, &env.terminal_id).map_err(Failure::Run)?;
+    let mut spec = spec_of(p, &env.terminal_id).map_err(Failure::Run)?;
     let (conn, _keep) = connect().map_err(Failure::Setup)?;
+    if p.int("review-pr") != 0 {
+        let repo = if spec.worktree.is_empty() { "." } else { &spec.worktree };
+        spec.worktree = agents::review_worktree(repo, p.int("review-pr")).map_err(Failure::Run)?;
+    }
     let worker = agents::spawn(&conn, &cfg, spec, env.kit.as_ref(), env.home.as_deref()).map_err(Failure::Run)?;
     let text = if p.flag("json") { json_text(&worker)? } else { format!("{} {}\n", worker.name, worker.address) };
     out.write_all(text.as_bytes()).map_err(|e| Failure::Run(e.to_string()))
@@ -318,6 +385,17 @@ mod tests {
         ] {
             assert_eq!(parse(sub, &words(args)).unwrap_err(), want);
         }
+    }
+
+    #[test]
+    fn whole_number_flags_must_parse_and_flags_belong_to_their_subcommand() {
+        assert_eq!(parse("read", &words("t1 --lines 20")).unwrap().int("lines"), 20);
+        assert_eq!(parse("spawn", &words("--review-pr=-1")).unwrap().int("review-pr"), -1);
+        assert_eq!(parse("spawn", &words("--name x")).unwrap().int("review-pr"), 0);
+        assert_eq!(parse("read", &words("--lines 2x")).unwrap_err(), "invalid value \"2x\" for flag -lines: parse error");
+        assert_eq!(parse("stop", &words("--lines 2")).unwrap_err(), "flag --lines does not apply");
+        assert!(parse("stop", &words("--keep t1")).unwrap().flag("keep"));
+        assert!(parse("rm", &words("--ended")).unwrap().flag("ended"));
     }
 
     fn scratch_file(content: &str) -> PathBuf {
@@ -379,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_errors_exit_2_and_later_parts_say_not_built_yet() {
+    fn usage_errors_exit_2() {
         let (code, _, err) = call("", None);
         assert_eq!((code, err.starts_with("Usage:")), (2, true));
         let (code, _, err) = call("ls extra", None);
@@ -388,7 +466,5 @@ mod tests {
         let (code, _, err) = call("bogus", None);
         assert_eq!(code, 2);
         assert!(err.starts_with("contr-rune agents: unknown command bogus\n"));
-        let (code, _, err) = call("stop x", None);
-        assert_eq!((code, err.as_str()), (2, "contr-rune agents stop: not built yet\n"));
     }
 }

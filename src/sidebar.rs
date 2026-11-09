@@ -8,7 +8,8 @@
 //! Element keys: `add-project`, `project-<i>`, `add-<i>` (the project's hover `+`),
 //! `agent/<address>` (with `glyph` = the state mark, its label the state, `subtitle` = the meta line
 //! and `detail` = the age inside),
-//! `term-<id>`, `server-this-mac`, `settings`.
+//! `term-<id>`, `server-this-mac`, `settings`, and in the foot the plan meters `meter/claude` and `meter/codex`
+//! (H11; each has the parts `label`, `bar` and `value`, the value is the percent used or "–").
 //!
 //! A secondary press on an agent row opens its menu (A1): Interrupt, Stop, Open PR. The kit names
 //! the parts `agent/<address>/menu-menu` and `agent/<address>/menu-item0..2` (Interrupt, Stop, Open
@@ -20,7 +21,7 @@ use std::sync::atomic::Ordering;
 
 use rune::{Color, Cycle, El, FileDialogOptions, Icon, LoopSpec, PointerPress, el, icon, row, spacer, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
-use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, MenuItem, context_menu};
+use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, MenuItem, Progress, context_menu};
 
 use crate::github as gh;
 use crate::hc::model::{self, Agent, AgentState, Line};
@@ -353,6 +354,23 @@ fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
     r.build(k).key(format!("term-{id}"))
 }
 
+/// One plan meter of the foot: "Claude ▬ 38%". `used` is the percent used, none for no data ("–" and an empty bar).
+fn plan_meter(k: &Kit, name: &str, key: &str, used: Option<u32>) -> El {
+    let c = &k.c;
+    let value = used.map_or("–".to_owned(), |p| format!("{p}%"));
+    let bar = el().w(PLAN_BAR_WIDTH).child(Progress::new(Some(used.unwrap_or(0) as f32 / 100.0)).build(k)).key("bar");
+    row()
+        .key(key)
+        .gap(6.0)
+        .center_y()
+        .child(text(name.to_owned()).key("label").font(k.ty.text_xsmall).color(c.text_faint))
+        .child(bar)
+        .child(text(value).key("value").font(k.ty.mono).color(c.text_muted))
+}
+
+/// Width of a plan meter's bar (Go: 44 px).
+const PLAN_BAR_WIDTH: f32 = 44.0;
+
 pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
     agent_menu(k, s, layer);
     let add_project = icon_button(&PLUS, "Open a folder")
@@ -389,7 +407,18 @@ pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
         .footer(section_head(k, "Servers", None))
         .footer(this_mac)
         .footer(row().w_full().h(1.0).fill(k.c.border_muted).mt(6.0))
-        .footer(row().w_full().pt(8.0).pr(2.0).child(spacer()).child(gear))
+        .footer(
+            row()
+                .w_full()
+                .pt(8.0)
+                .pr(2.0)
+                .gap(12.0)
+                .center_y()
+                .child(plan_meter(k, "Claude", "meter/claude", s.plans.reading.claude))
+                .child(plan_meter(k, "Codex", "meter/codex", s.plans.reading.codex))
+                .child(spacer())
+                .child(gear),
+        )
         .build(k);
     shell::sidebar_panel(k).padding(10.0).child(list)
 }

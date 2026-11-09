@@ -13,18 +13,17 @@ fn program() -> Option<String> {
     }
 }
 
-/// `gh <args>` in `dir`: Ok when it exits 0, else the first line of its stderr.
-fn gh(dir: &Path, args: &[&str]) -> Result<(), String> {
+/// `gh <args>` in `dir`: its stdout when it exits 0, else the first line of its stderr.
+fn gh(dir: &Path, args: &[&str]) -> Result<String, String> {
     let program = program().ok_or("gh is not available")?;
     let out = Command::new(&program)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .output()
         .map_err(|e| format!("couldn't run {program}: {e}"))?;
     if out.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     let err = String::from_utf8_lossy(&out.stderr);
     Err(err.lines().next().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("gh failed").to_owned())
@@ -37,5 +36,15 @@ pub fn has_pr(dir: &Path) -> bool {
 
 /// Open the branch's pull request in the browser.
 pub fn open_pr(dir: &Path) -> Result<(), String> {
-    gh(dir, &["pr", "view", "--web"])
+    gh(dir, &["pr", "view", "--web"]).map(drop)
+}
+
+/// The commit at the head of pull request `pr` (`gh pr view <pr> --json headRefOid`).
+pub fn pr_head(dir: &Path, pr: i64) -> Result<String, String> {
+    let out = gh(dir, &["pr", "view", &pr.to_string(), "--json", "headRefOid"])?;
+    let head: serde_json::Value = serde_json::from_str(&out).map_err(|e| format!("gh pr view: {e}"))?;
+    match head["headRefOid"].as_str() {
+        Some(sha) if !sha.is_empty() => Ok(sha.to_owned()),
+        _ => Err(format!("pull request {pr} has no head commit")),
+    }
 }

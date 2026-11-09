@@ -1,7 +1,7 @@
 //! The in-process fake core (Contract C9): speaks the plain and the framed protocol from a
 //! fixture, so headless runs and tests never dial a real hc.
 //!
-//! `CONTR_HC_FAKE_LOG=<file>` appends each mutating call as a JSON line `{"method":…,"params":…}`
+//! `CONTR_HC_FAKE_LOG=<file>` appends each mutating call (and `terminal.read`, K1) as a JSON line `{"method":…,"params":…}`
 //! and each stream input frame as `{"frame":"data","terminal":…,"bytes":"<utf8>"}`,
 //! `{"frame":"resize","terminal":…,"cols":…,"rows":…}` or `{"frame":"close","terminal":…}`.
 //!
@@ -51,7 +51,7 @@ use serde_json::{Value, json};
 use super::framed::{Decoder, Kind, SendWindow, encode, parse_credit, parse_resize};
 
 /// Methods that change the core: logged.
-const MUTATING: [&str; 6] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach", "terminal.interrupt"];
+const MUTATING: [&str; 7] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach", "terminal.interrupt", "terminal.read"];
 
 /// How often the fake sends a heartbeat (the core sends one every 15 s).
 const HEARTBEAT: Duration = Duration::from_secs(15);
@@ -638,6 +638,12 @@ impl Ctx {
             }
             "terminal.send" => fx.send(Self::address(params)),
             "terminal.interrupt" => fx.get(Self::address(params)).map(|_| json!({"outcome": "stopped", "key": "esc"})),
+            "terminal.read" => {
+                let address = Self::address(params);
+                fx.get(address)?;
+                let text = fx.core.lock().unwrap().screens.get(address).cloned().unwrap_or_default();
+                Ok(json!({"text": text, "complete": true, "how": "screen"}))
+            }
             m => Err(("unknown_method", format!("unknown method {m}"))),
         }
     }
