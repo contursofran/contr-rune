@@ -269,6 +269,8 @@ pub struct Updater {
     last_try: Option<Instant>,
     last_ok: Option<Instant>,
     inflight: bool,
+    /// The last check failed (no network, a bad answer).
+    failed: bool,
     /// A check was asked for (focus, the Settings button) and waits for `poll`.
     wanted: bool,
     /// The version the toast was shown for: one toast per version.
@@ -294,6 +296,7 @@ impl Updater {
             last_try: None,
             last_ok: None,
             inflight: false,
+            failed: false,
             wanted: false,
             toasted: None,
             toast: false,
@@ -310,7 +313,11 @@ impl Updater {
     /// Take a result in (and show the toast for a version not yet announced). Returns whether the view changes.
     fn accept(&mut self, found: Found) -> bool {
         self.inflight = false;
-        let Some(newest) = found else { return false };
+        let Some(newest) = found else {
+            self.failed = true;
+            return true;
+        };
+        self.failed = false;
         self.checked = true;
         self.last_ok = Some(Instant::now());
         let ready = is_newer(&newest.tag, CURRENT).then(|| Release { version: newest.tag.trim_start_matches('v').to_owned(), items: newest.items });
@@ -365,6 +372,7 @@ impl Updater {
         if !self.inflight && (self.wanted || (focused && due)) {
             self.wanted = false;
             self.inflight = true;
+            changed = true;
             self.last_try = Some(Instant::now());
             let (out, waker) = (self.tx.clone(), waker.cloned());
             std::thread::spawn(move || {
@@ -435,9 +443,23 @@ impl Updater {
             (Some(r), _) if self.install == Install::Working => format!("{CURRENT} \u{b7} installing {}\u{2026}", r.version),
             (Some(r), _) if self.install == Install::Verified => format!("{CURRENT} \u{b7} {} verified (dry run)", r.version),
             (Some(r), _) => format!("{CURRENT} \u{b7} {} available", r.version),
-            (None, true) => format!("{CURRENT} \u{b7} up to date"),
+            (None, _) if self.inflight => format!("{CURRENT} \u{b7} checking\u{2026}"),
+            (None, _) if self.failed => format!("{CURRENT} \u{b7} could not check"),
+            (None, true) => {
+                let ago = self.last_ok.map_or(String::new(), |t| format!(" \u{b7} checked {}", ago(t.elapsed())));
+                format!("{CURRENT} \u{b7} up to date{ago}")
+            }
             (None, false) => CURRENT.to_owned(),
         }
+    }
+}
+
+/// How long ago, for Settings: "just now", "5 min ago", "2 h ago".
+fn ago(d: Duration) -> String {
+    match d.as_secs() / 60 {
+        0 => "just now".to_owned(),
+        m @ 1..60 => format!("{m} min ago"),
+        m => format!("{} h ago", m / 60),
     }
 }
 
@@ -602,8 +624,21 @@ mod tests {
         assert!(u.toast, "a newer one does");
         u.accept(found("v0.0.1"));
         assert!(u.ready.is_none());
-        assert_eq!(u.status(), format!("{CURRENT} \u{b7} up to date"));
+        assert_eq!(u.status(), format!("{CURRENT} \u{b7} up to date \u{b7} checked just now"));
         u.accept(None);
-        assert_eq!(u.status(), format!("{CURRENT} \u{b7} up to date"), "a failed check keeps the last answer");
+        assert_eq!(u.status(), format!("{CURRENT} \u{b7} could not check"), "a failed check says so");
+    }
+
+    #[test]
+    fn settings_says_what_the_check_does() {
+        let mut u = Updater::new();
+        assert_eq!(u.status(), CURRENT, "no check yet");
+        u.inflight = true;
+        assert_eq!(u.status(), format!("{CURRENT} \u{b7} checking\u{2026}"));
+        u.accept(Some(Newest { tag: "v0.0.1".into(), items: vec![] }));
+        assert_eq!(u.status(), format!("{CURRENT} \u{b7} up to date \u{b7} checked just now"));
+        for (secs, want) in [(59, "just now"), (60, "1 min ago"), (59 * 60, "59 min ago"), (3 * 3600 + 5, "3 h ago")] {
+            assert_eq!(ago(Duration::from_secs(secs)), want);
+        }
     }
 }

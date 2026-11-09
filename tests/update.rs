@@ -73,7 +73,7 @@ fn settings_says_which_version_is_ready() {
     assert_eq!(newer.text_in("version/contr-rune", "version/contr-rune/value").unwrap(), format!("{} \u{b7} 9.9.9 available", env!("CARGO_PKG_VERSION")));
     assert!(newer.has("settings-check-updates"));
     let current = run("current.json", vec![tap(0.3, "settings"), tap(0.5, "settings-tabs/segment2")]);
-    assert_eq!(current.text_in("version/contr-rune", "version/contr-rune/value").unwrap(), format!("{} \u{b7} up to date", env!("CARGO_PKG_VERSION")));
+    assert_eq!(current.text_in("version/contr-rune", "version/contr-rune/value").unwrap(), format!("{} \u{b7} up to date \u{b7} checked just now", env!("CARGO_PKG_VERSION")));
 }
 
 /// The key pair of the fixtures' signatures (made for tests; the private half is not kept).
