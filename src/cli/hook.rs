@@ -1,7 +1,8 @@
 //! `contr-rune hook stop` and `hook session-start` (PARITY-PLAN D5, D6; Go: cmd/contr/hook.go).
 //! Claude Code gives the hook input as one JSON value on stdin. Stop, in a worker
 //! (`CONTR_COORDINATOR` set): a turn that sent no report gets one sent to the coordinator; in any
-//! hc session the terminal gets the `contr.model` and `contr.effort` labels (D189); in a
+//! hc session the terminal gets the `contr.model` and `contr.effort` labels (D189) and, outside a
+//! worker, `contr.context`, `contr.context-limit` and `contr.orchestrating` (D191); in a
 //! coordinator past `CONTR_SAVE_AT` tokens the turn is kept once to save `COORDINATOR-STATE.md`.
 //! session-start, after a compaction in a coordinator, prints what it needs to carry on. It never
 //! exits 2: for a Stop hook that blocks the turn.
@@ -64,13 +65,15 @@ pub struct Env {
     pub terminal_id: String,
     /// `CLAUDE_EFFORT`.
     pub effort: String,
+    /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, as written.
+    pub compact_window: String,
     pub restore: restore::Env,
 }
 
 impl Env {
     pub fn real() -> Env {
         let var = |k: &str| std::env::var(k).unwrap_or_default();
-        Env { coordinator: var("CONTR_COORDINATOR"), terminal_id: var("HC_TERMINAL_ID"), effort: var("CLAUDE_EFFORT"), restore: restore::Env::real() }
+        Env { coordinator: var("CONTR_COORDINATOR"), terminal_id: var("HC_TERMINAL_ID"), effort: var("CLAUDE_EFFORT"), compact_window: var("CLAUDE_CODE_AUTO_COMPACT_WINDOW"), restore: restore::Env::real() }
     }
 }
 
@@ -282,6 +285,7 @@ fn missed_report(said: &str, cwd: &str) -> String {
 
 /// The labels to set: the short model of the transcript and the effort of the hook input, else
 /// `CLAUDE_EFFORT`. A value that is not known is left out, so the label keeps its last value.
+/// Outside a worker also the context size and `contr.orchestrating` (Go `coordinatorStop`).
 fn labels(input: &Value, transcript: &str, env: &Env) -> Vec<(&'static str, String)> {
     let mut labels = Vec::new();
     if env.terminal_id.is_empty() {
@@ -296,7 +300,28 @@ fn labels(input: &Value, transcript: &str, env: &Env) -> Vec<(&'static str, Stri
     if !effort.is_empty() {
         labels.push(("contr.effort", effort.to_owned()));
     }
+    if env.coordinator.is_empty() && !transcript.is_empty() {
+        let path = Path::new(transcript);
+        labels.extend(context_labels(turn::context_tokens(path).unwrap_or(0), &env.compact_window));
+        if turn::ran_command(path, restore::ORCHESTRATE_COMMAND).unwrap_or(false) {
+            labels.push(("contr.orchestrating", "1".to_owned()));
+        }
+    }
     labels
+}
+
+/// The compaction window the context is shown against when `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is
+/// not a positive number.
+const DEFAULT_COMPACT_WINDOW: u64 = 250_000;
+
+/// `contr.context` (tokens) and `contr.context-limit` (the compaction window). 0 tokens gives an
+/// empty `contr.context`, which removes the label, and no limit.
+fn context_labels(tokens: u64, window: &str) -> Vec<(&'static str, String)> {
+    if tokens == 0 {
+        return vec![("contr.context", String::new())];
+    }
+    let limit = window.trim().parse::<u64>().ok().filter(|&n| n > 0).unwrap_or(DEFAULT_COMPACT_WINDOW);
+    vec![("contr.context", tokens.to_string()), ("contr.context-limit", limit.to_string())]
 }
 
 /// `terminal.label` on this terminal. Best effort.
@@ -336,7 +361,7 @@ mod tests {
 
     #[test]
     fn labels_take_the_effort_of_the_input_before_the_environment() {
-        let env = |effort: &str, id: &str| Env { coordinator: String::new(), terminal_id: id.into(), effort: effort.into(), restore: restore::Env::default() };
+        let env = |effort: &str, id: &str| Env { coordinator: String::new(), terminal_id: id.into(), effort: effort.into(), compact_window: String::new(), restore: restore::Env::default() };
         let input = json!({"effort": {"level": "high"}});
         assert_eq!(labels(&input, "", &env("low", "t1")), vec![("contr.effort", "high".to_owned())]);
         assert_eq!(labels(&json!({}), "", &env("low", "t1")), vec![("contr.effort", "low".to_owned())]);
@@ -345,14 +370,25 @@ mod tests {
     }
 
     #[test]
+    fn context_labels_table() {
+        let l = |t: &str, w: &str| vec![("contr.context", t.to_owned()), ("contr.context-limit", w.to_owned())];
+        assert_eq!(context_labels(0, "100000"), vec![("contr.context", String::new())]);
+        assert_eq!(context_labels(90_000, ""), l("90000", "250000"));
+        assert_eq!(context_labels(90_000, " 1000000 "), l("90000", "1000000"));
+        for bad in ["0", "-1", "big"] {
+            assert_eq!(context_labels(5, bad), l("5", "250000"), "{bad}");
+        }
+    }
+
+    #[test]
     fn input_is_one_json_value_and_bad_input_exits_1_never_2() {
         assert_eq!(read_input(&b"{\"a\":1} trailing"[..]).unwrap(), json!({"a": 1}));
         assert!(read_input(&b""[..]).is_err());
-        let env = Env { coordinator: "t3".into(), terminal_id: "t1".into(), effort: String::new(), restore: restore::Env::default() };
+        let env = Env { coordinator: "t3".into(), terminal_id: "t1".into(), effort: String::new(), compact_window: String::new(), restore: restore::Env::default() };
         let mut err = Vec::new();
         assert_eq!(run(&["stop".into()], &env, &b"nope"[..], &mut Vec::new(), &mut err), 1);
         assert!(String::from_utf8(err).unwrap().contains("bad hook input"));
-        let outside = Env { coordinator: String::new(), terminal_id: String::new(), effort: String::new(), restore: restore::Env::default() };
+        let outside = Env { coordinator: String::new(), terminal_id: String::new(), effort: String::new(), compact_window: String::new(), restore: restore::Env::default() };
         assert_eq!(run(&["stop".into()], &outside, &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
         for args in [vec![], vec!["bogus".to_owned()], vec!["prompt".to_owned(), "extra".to_owned()]] {
             assert_eq!(run(&args, &env, &b""[..], &mut Vec::new(), &mut Vec::new()), 1);
