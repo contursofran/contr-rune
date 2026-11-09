@@ -303,6 +303,11 @@ Every part: branch `part-h<n>-<name>` off `origin/main`; `cargo build` with no w
   (`UserPromptSubmit` → working, `Stop` → idle, `Notification` permission → blocked) that writes OSC 7501 to the
   terminal. The exact OSC 7501 byte format must be taken from the protocol spec first; it is not in the hc docs.
 
+- **Result (2026-11-08, `scripts/hc-status-probe.sh`, hc 0.1.19):** neither program reports. Claude Code
+  2.1.319 (`foreground` "2.1.319") and Codex (`--no-daemon`, `foreground` "node") both kept `status: null` after
+  20 s idle, and Claude also after being sent a prompt. So every agent shows Idle and needs-you never fires
+  until **H7b** (a status hook) exists. The OSC 7501 byte format is still needed from the hc protocol spec.
+
 **H8 · Selecting an agent shows its terminal**
 - Files: `src/main.rs`, `src/hc/term.rs`.
 - Clicking an agent row attaches its hc terminal in the focused pane (as a tab of its project); the tab strip and
