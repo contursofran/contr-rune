@@ -1092,6 +1092,9 @@ fn is_shortcut(ev: &KeyEvent, c: char) -> bool {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if let Some(used) = outline::key(s, ev, tx) {
+        return used;
+    }
     if notch::key(s, ev) {
         return true;
     }
