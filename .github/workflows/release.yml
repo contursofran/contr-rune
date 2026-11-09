@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # dry run: builds and zips, does not publish
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14 # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version} (expected v${version})"
+            exit 1
+          fi
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the app bundle
+        run: scripts/bundle-app.sh
+
+      - name: Zip and checksum
+        working-directory: target/bundle
+        run: |
+          ditto -c -k --keepParent contr-rune.app contr-rune-macos-arm64.zip
+          shasum -a 256 contr-rune-macos-arm64.zip > contr-rune-macos-arm64.zip.sha256
+
+      - name: Create the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notes="Ad-hoc signed, not notarised: first open with right-click, then Open.
+          Or run: xattr -dr com.apple.quarantine contr-rune.app"
+          gh release create "${GITHUB_REF_NAME}" \
+            target/bundle/contr-rune-macos-arm64.zip \
+            target/bundle/contr-rune-macos-arm64.zip.sha256 \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "$notes" \
+            --generate-notes
