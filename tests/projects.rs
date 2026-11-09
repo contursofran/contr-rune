@@ -27,7 +27,7 @@ fn an_added_project_comes_back_selected_at_the_next_launch() {
 
     // A file with one folder; add a second one through the dialog.
     std::fs::write(&file, json!({ "version": 1, "open": [root.join("first")] }).to_string()).unwrap();
-    let first = launch(vec![tap(0.3, "add-project"), json!({ "t": 0.5, "type": "file-dialog", "path": root.join("added") })]);
+    let first = launch(vec![tap(0.3, "add-project"), tap(0.4, "add-project/menu-item1"), json!({ "t": 0.5, "type": "file-dialog", "path": root.join("added") })]);
     assert!(first.has("project-1"), "the folder is added");
 
     let again = launch(vec![]);
