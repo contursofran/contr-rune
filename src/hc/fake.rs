@@ -41,7 +41,7 @@ use std::fmt;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
@@ -130,6 +130,21 @@ struct Manual {
     changed: Condvar,
     /// The script waits until this instant (see `Fixture::settle`).
     busy_until: Mutex<std::time::Instant>,
+    /// Client work that has started and not ended (see `Fixture::work`).
+    working: AtomicUsize,
+}
+
+/// Held while a client of the fake does a run of steps (dial, `terminal.run`, `terminal.attach`,
+/// the size). `Fixture::settle` waits for it, however long a step stalls on a loaded machine.
+pub struct Work(Arc<Fixture>);
+
+impl Drop for Work {
+    fn drop(&mut self) {
+        if let Clock::Manual(m) = &self.0.clock {
+            m.working.fetch_sub(1, Ordering::AcqRel);
+        }
+        self.0.bump();
+    }
 }
 
 /// How long after the last activity the fake still counts as busy.
@@ -175,7 +190,7 @@ impl Fixture {
 
     /// Switch to a manual clock that starts at 0 and moves only with `set_time`.
     pub fn with_manual_clock(mut self) -> Fixture {
-        self.clock = Clock::Manual(Manual { state: Mutex::new((0, Vec::new())), changed: Condvar::new(), busy_until: Mutex::new(std::time::Instant::now()) });
+        self.clock = Clock::Manual(Manual { state: Mutex::new((0, Vec::new())), changed: Condvar::new(), busy_until: Mutex::new(std::time::Instant::now()), working: AtomicUsize::new(0) });
         self
     }
 
@@ -197,9 +212,22 @@ impl Fixture {
         }
     }
 
-    /// Wait, in real time, until the fake has been quiet for `SETTLE`.
+    /// Start a run of client work that `settle` waits for until the guard drops.
+    pub fn work(self: &Arc<Self>) -> Work {
+        if let Clock::Manual(m) = &self.clock {
+            m.working.fetch_add(1, Ordering::AcqRel);
+        }
+        Work(self.clone())
+    }
+
+    /// Wait, in real time, until no client work runs and the fake has been quiet for `SETTLE`.
     pub fn settle(&self) {
         let Clock::Manual(m) = &self.clock else { return };
+        while m.working.load(Ordering::Acquire) > 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The lock is held while asleep: a `bump` in that time waits, so a retry loop that bumps
+        // every few ms cannot keep the script back for ever.
         while let Some(left) = m.busy_until.lock().unwrap().checked_duration_since(std::time::Instant::now()) {
             std::thread::sleep(left);
         }
@@ -910,6 +938,21 @@ mod tests {
         let started = std::time::Instant::now();
         fx.settle();
         assert!(started.elapsed() >= SETTLE / 2, "the event keeps the fake busy for a moment");
+    }
+
+    #[test]
+    fn settle_waits_for_client_work_however_long_it_stalls() {
+        let fx = Arc::new(Fixture::from_value(json!({})).with_manual_clock());
+        let work = fx.work();
+        let (tx, rx) = channel();
+        let waiting = fx.clone();
+        std::thread::spawn(move || {
+            waiting.settle();
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(SETTLE * 3).is_err(), "still working: settle holds, though nothing was quiet-logged");
+        drop(work);
+        rx.recv_timeout(T).expect("settle returns once the work ends and the fake is quiet");
     }
 
     // ───── framed mode ─────
