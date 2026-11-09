@@ -21,6 +21,7 @@ mod grid;
 mod hc;
 mod keys;
 mod notch;
+mod orchestrator;
 mod outline;
 mod paths;
 mod projects;
