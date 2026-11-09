@@ -310,8 +310,8 @@ pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
         file_tree(k, s)
     };
     let panel = shell::files_panel(k).padding(10.0).child(head).child(body);
-    match s.selected_agent.as_deref().and_then(usage::read_context) {
-        Some(ctx) => panel.child(context_meter(k, &ctx)),
+    match s.context.context.as_ref() {
+        Some(ctx) => panel.child(context_meter(k, ctx)),
         None => panel,
     }
 }

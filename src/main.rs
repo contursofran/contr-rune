@@ -165,6 +165,7 @@ struct App {
     card: notch::Card,
     /// Claude and Codex plan meters in the sidebar foot (H11).
     plans: usage::Plans,
+    context: usage::ContextCache,
     /// The terminal text selection (T1).
     select: select::Select,
     /// The update check, pill and toast (R3a).
@@ -260,6 +261,7 @@ fn init() -> App {
         owner_stamp: None,
         card: notch::Card::default(),
         plans: usage::Plans::new(),
+        context: usage::ContextCache::default(),
         select: select::Select::default(),
         update: update::Updater::new(),
         outline: outline::State::default(),
@@ -830,6 +832,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
         tx.wake_after(OWNER_EVERY);
     }
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
+    changed |= s.context.poll(s.selected_agent.as_deref(), s.focused, tx);
     changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
     s.sync_outline();
