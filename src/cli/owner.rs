@@ -47,12 +47,18 @@ pub struct Env {
 impl Env {
     pub fn real() -> Env {
         let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(|v| v.to_string_lossy().into_owned());
-        let project = var("CONTR_PROJECT").or_else(|| {
-            let cwd = std::env::current_dir().ok()?;
-            cwd.file_name().map(|n| n.to_string_lossy().into_owned())
-        });
-        Env { owner_file: paths::owner_file(), project: project.unwrap_or_default(), terminal_id: var("HC_TERMINAL_ID").unwrap_or_default() }
+        Env { owner_file: paths::owner_file(), project: project_name(), terminal_id: var("HC_TERMINAL_ID").unwrap_or_default() }
     }
+}
+
+/// `CONTR_PROJECT`, else the name of the current folder (Go `projectName`).
+pub fn project_name() -> String {
+    let var = std::env::var("CONTR_PROJECT").ok().filter(|v| !v.is_empty());
+    var.or_else(|| {
+        let cwd = std::env::current_dir().ok()?;
+        cwd.file_name().map(|n| n.to_string_lossy().into_owned())
+    })
+    .unwrap_or_default()
 }
 
 /// Runs `contr-rune owner <args>` and returns the exit code.

@@ -1,7 +1,8 @@
-//! The agent tools of `contr-rune mcp`: `spawn`, `message`, `interrupt`, `stop`, `read`, `prompt`,
-//! `list` and `clear_ended`. Names, descriptions, argument names and result texts are Go's
-//! (go:cmd/contr/mcp.go `agentTools`), so the kit's playbook stays valid. The work is in
-//! `crate::agents`.
+//! The tools of `contr-rune mcp`: the agent tools `spawn`, `message`, `interrupt`, `stop`, `read`,
+//! `prompt`, `list` and `clear_ended`, and the owner tools `ask_owner`, `decided`, `pin_for_owner`,
+//! `unpin_for_owner` and `owner_items`. Names, descriptions, argument names and result texts are Go's
+//! (go:cmd/contr/mcp.go `agentTools`, `ownerTools`), so the kit's playbook stays valid. The work is in
+//! `crate::agents` and `crate::hc::owner`.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -11,6 +12,7 @@ use super::mcp::ToolDef;
 use crate::agents::{self, Spec};
 use crate::hc::conn::Conn;
 use crate::hc::dial::Keep;
+use crate::hc::owner::{NewQuestion, NewTodo, OwnerFile};
 
 /// The arguments of every tool, as Go's one `args` struct. An unknown argument is an error, so a
 /// misnamed field (`message` for `text`) never becomes an empty value (D200).
@@ -30,6 +32,18 @@ struct Args {
     all: bool,
     keep: bool,
     review_pr: i64,
+    question: String,
+    options: Vec<String>,
+    recommended: Option<i64>,
+    impacts: Vec<String>,
+    refs: Vec<String>,
+    source: String,
+    title: String,
+    from: String,
+    kind: String,
+    ids: Vec<String>,
+    answer: String,
+    by: String,
 }
 
 impl Args {
@@ -39,7 +53,8 @@ impl Args {
 }
 
 fn schema(required: &[&str], props: &[(&str, &str, &str)]) -> Value {
-    let props: serde_json::Map<String, Value> = props.iter().map(|(n, ty, d)| ((*n).to_owned(), json!({"type": ty, "description": d}))).collect();
+    let prop = |ty: &str, d: &str| if ty == "string[]" { json!({"type": "array", "items": {"type": "string"}, "description": d}) } else { json!({"type": ty, "description": d}) };
+    let props: serde_json::Map<String, Value> = props.iter().map(|(n, ty, d)| ((*n).to_owned(), prop(ty, d))).collect();
     let mut s = json!({"type": "object", "properties": props});
     if !required.is_empty() {
         s["required"] = json!(required);
@@ -94,6 +109,46 @@ pub fn defs() -> Vec<ToolDef> {
             name: "clear_ended",
             description: "Remove the finished terminals of the workers this coordinator started. Other coordinators' workers and plain terminals stay. Returns the names removed.",
             schema: schema(&[], &[]),
+        },
+        ToolDef {
+            name: "ask_owner",
+            description: "Ask the owner a question only they can answer (a product rule, a design choice, an approval). It is kept until it is decided. Returns its id (D1, D2, …). contr shows it in the questions card, and sends the answer to you as `Owner answered <ID>: <answer>`. When the owner answers in chat, close it with decided.",
+            schema: schema(
+                &["question"],
+                &[
+                    ("question", "string", "The question, with enough context to answer it from there alone."),
+                    ("options", "string[]", "Short answers to pick from (2-4)."),
+                    ("recommended", "integer", "Index in options of your recommendation."),
+                    ("title", "string", "A 2-4 word name."),
+                    ("from", "string", "The worker, issue or PR it is about."),
+                    ("impacts", "string[]", "One line per option, in the order of options: what choosing it means. The sheet shows each under its option."),
+                    ("refs", "string[]", "What helps the owner decide: `PR 12` (opens the PR pane), `#12` or `issue 12` (opens in the browser), an http or https URL, or a file path. At most a few."),
+                    ("source", "string", "A short excerpt (a few lines) of the text that raised the question, such as a worker's report."),
+                ],
+            ),
+        },
+        ToolDef {
+            name: "decided",
+            description: "Close questions: ones the owner answered in chat (by owner), or ones you settled yourself because they are not the owner's (by coordinator).",
+            schema: schema(&["ids", "answer", "by"], &[("ids", "string[]", "Question ids, such as D3."), ("answer", "string", "The answer, short."), ("by", "string", "owner or coordinator.")]),
+        },
+        ToolDef {
+            name: "pin_for_owner",
+            description: "Pin one line for the owner: something to do (kind do: test a build, merge a PR that waits for them) or to know (kind know). Returns its id (T1, T2, …).",
+            schema: schema(
+                &["text"],
+                &[("text", "string", "One short line with all it takes to act."), ("kind", "string", "do (the default) or know."), ("from", "string", "The worker, issue or PR it is about.")],
+            ),
+        },
+        ToolDef {
+            name: "unpin_for_owner",
+            description: "Remove pinned items once they are done or no longer needed.",
+            schema: schema(&["ids"], &[("ids", "string[]", "Ids such as T3.")]),
+        },
+        ToolDef {
+            name: "owner_items",
+            description: "List the open questions and pinned items of this project (all projects with all).",
+            schema: schema(&[], &[("all", "boolean", "All projects.")]),
         },
     ]
 }
@@ -154,7 +209,31 @@ impl Tools {
                 (_, Some(e)) => Err(e),
                 (names, None) => json_text(&names),
             },
+            "ask_owner" | "decided" | "pin_for_owner" | "unpin_for_owner" | "owner_items" => self.owner(name, a),
             other => Err(format!("unknown tool: {other}")),
+        }
+    }
+
+    /// The owner tools write `owner.json` for this project, with this terminal as the coordinator.
+    fn owner(&self, name: &str, a: Args) -> Result<String, String> {
+        let store = self.env.owner_file.clone().map(OwnerFile::new).ok_or("no home folder to find owner.json in")?;
+        let (project, coordinator) = (self.env.project.clone(), self.env.terminal_id.clone());
+        let io = |e: std::io::Error| e.to_string();
+        match name {
+            "ask_owner" => {
+                let recommended = a.recommended.map(|r| usize::try_from(r).map_err(|_| format!("recommended {r} is not an option index"))).transpose()?;
+                let q = NewQuestion { project, coordinator, from: a.from, title: a.title, question: a.question, options: a.options, recommended, impacts: a.impacts, refs: a.refs, source: a.source };
+                store.ask(q).map_err(io)
+            }
+            "decided" => store.decide(&a.ids, &a.answer, &a.by).map(|()| "decided".into()).map_err(io),
+            "pin_for_owner" => store.pin(NewTodo { project, coordinator, from: a.from, kind: a.kind, text: a.text }).map_err(io),
+            "unpin_for_owner" => store.unpin(&a.ids).map(|()| "unpinned".into()).map_err(io),
+            _ => {
+                let (questions, todos) = store.open_items((!a.all).then_some(project.as_str())).map_err(io)?;
+                // Go encodes an empty list as null.
+                let list = |v: Vec<Value>| if v.is_empty() { Value::Null } else { Value::Array(v) };
+                json_text(&json!({"questions": list(questions), "todos": list(todos)}))
+            }
         }
     }
 
@@ -186,7 +265,7 @@ mod tests {
     use super::*;
 
     fn tools(dir: &std::path::Path) -> Tools {
-        Tools::new(Env { config_path: Some(dir.join("agents.json")), kit: None, home: None, terminal_id: String::new() })
+        Tools::new(Env { config_path: Some(dir.join("agents.json")), kit: None, home: None, terminal_id: String::new(), owner_file: Some(dir.join("owner.json")), project: "proj".into() })
     }
 
     #[test]
@@ -201,6 +280,11 @@ mod tests {
             ("prompt", json!(["name"])),
             ("list", Value::Null),
             ("clear_ended", Value::Null),
+            ("ask_owner", json!(["question"])),
+            ("decided", json!(["ids", "answer", "by"])),
+            ("pin_for_owner", json!(["text"])),
+            ("unpin_for_owner", json!(["ids"])),
+            ("owner_items", Value::Null),
         ];
         assert_eq!(got, want);
     }
@@ -215,6 +299,34 @@ mod tests {
         let e = t.run("read", json!({"name": "b-1", "lines": "ten"})).unwrap_err();
         assert!(e.starts_with("bad arguments: invalid type"), "{e}");
         assert!(t.link.is_none(), "no connection for a refused call");
+    }
+
+    #[test]
+    fn the_owner_tools_refuse_bad_arguments_and_write_nothing() {
+        let dir = std::env::temp_dir().join(format!("contr-rune-mcp-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut t = tools(&dir);
+        let cases = [
+            ("ask_owner", json!({"question": ""}), "a question needs text"),
+            ("ask_owner", json!({"question": "q", "options": ["a"], "recommended": 1}), "recommended 1 is not an option index"),
+            ("ask_owner", json!({"question": "q", "options": ["a"], "recommended": -1}), "recommended -1 is not an option index"),
+            ("ask_owner", json!({"question": "q", "option": ["a"]}), "bad arguments: unknown field `option`"),
+            ("ask_owner", json!({"question": "q", "options": "a"}), "bad arguments: invalid type"),
+            ("decided", json!({"ids": [], "answer": "x", "by": "owner"}), "no question ids"),
+            ("decided", json!({"ids": ["D1"], "answer": "x", "by": "me"}), "by \"me\" is not owner or coordinator"),
+            ("decided", json!({"ids": ["D9"], "answer": "x", "by": "owner"}), "no open question D9"),
+            ("pin_for_owner", json!({"text": ""}), "a to-do needs text"),
+            ("pin_for_owner", json!({"text": "x", "kind": "maybe"}), "kind \"maybe\" is not do or know"),
+            ("unpin_for_owner", json!({"ids": []}), "no to-do ids"),
+            ("unpin_for_owner", json!({"ids": ["T9"]}), "no open to-do T9"),
+        ];
+        for (tool, args, want) in cases {
+            let e = t.run(tool, args.clone()).unwrap_err();
+            assert!(e.starts_with(want), "{tool} {args}: {e}");
+        }
+        assert!(!dir.join("owner.json").exists());
+        assert_eq!(t.run("owner_items", json!({})).unwrap(), "{\n  \"questions\": null,\n  \"todos\": null\n}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
