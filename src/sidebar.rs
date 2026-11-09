@@ -143,8 +143,8 @@ fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
 }
 
 fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
-    let id = t.session.id;
-    let age = now_ms().saturating_sub(t.session.last_output.load(Ordering::Relaxed)) / 1000;
+    let id = t.session.id();
+    let age = now_ms().saturating_sub(t.session.last_output().load(Ordering::Relaxed)) / 1000;
     let mut r = SidebarRow::new(t.session.tab_title())
         .avatar(icon(&TERM, 16.0).color(k.c.icon_muted))
         .subtitle_style(theme::META)

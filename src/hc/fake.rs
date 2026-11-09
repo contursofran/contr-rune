@@ -16,6 +16,13 @@
 //! with `{"reason":"killed",…}`; a viewer CLOSE is answered with an empty CLOSE. Not served:
 //! `terminal.send` (answers `unavailable`, or the fixture's error), `automatic_input`,
 //! `resize_notifications` and FACTS.
+//!
+//! Events: a connection that called `events.subscribe` also gets `created` (a `terminal.run`),
+//! `finished` (a kill, or an exit) and `removed` (a `terminal.rm`) as they happen, numbered from 1
+//! by the fake (the fixture's timed events carry their own `seq`). The fixture key `exit_on`
+//! (for example `"exit\r"`) makes that stream input end the terminal as a shell that exits:
+//! viewers get CLOSE `{"reason":"exited","exit_code":0,"signal":null}`. The key `run_screen`
+//! is the first paint of a terminal made by `terminal.run` (default `"$ "`).
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -24,7 +31,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -99,6 +106,10 @@ struct Core {
     screens: HashMap<String, String>,
     next: u64,
     streams: HashMap<String, Vec<Arc<Stream>>>,
+    /// Connections that called `events.subscribe`.
+    subscribers: Vec<Weak<Ctx>>,
+    /// Number of the last event the fake made.
+    seq: u64,
 }
 
 impl fmt::Debug for Fixture {
@@ -118,11 +129,16 @@ impl Fixture {
         let terminals: Vec<Value> = raw["terminals"].as_array().cloned().unwrap_or_default();
         let next = terminals.iter().filter_map(|t| t["address"].as_str()?.strip_prefix('t')?.parse::<u64>().ok()).max().map_or(1, |n| n + 1);
         let screens = raw["screens"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_default();
-        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new() }), raw }
+        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0 }), raw }
     }
 
     fn terminals(&self) -> Vec<Value> {
         self.core.lock().unwrap().terminals.clone()
+    }
+
+    /// The stream input that makes a terminal exit like a shell (fixture key `exit_on`).
+    fn exit_on(&self) -> Option<&str> {
+        self.raw["exit_on"].as_str().filter(|s| !s.is_empty())
     }
 
     fn echo(&self) -> bool {
@@ -189,11 +205,29 @@ impl Fixture {
             "foreground": null, "status": null
         });
         core.terminals.push(rec.clone());
-        core.screens.insert(address, "$ ".to_owned());
+        core.screens.insert(address.clone(), self.raw["run_screen"].as_str().unwrap_or("$ ").to_owned());
+        drop(core);
+        self.emit("created", &address, rec.clone());
         let mut out = rec;
         out["output"] = json!("");
         out["wait"] = Value::Null;
         Ok(out)
+    }
+
+    /// Send an event notification to every subscribed connection.
+    fn emit(&self, kind: &str, terminal: &str, data: Value) {
+        let (seq, subs) = {
+            let mut core = self.core.lock().unwrap();
+            core.seq += 1;
+            core.subscribers.retain(|w| w.strong_count() > 0);
+            (core.seq, core.subscribers.clone())
+        };
+        let ev = json!({"jsonrpc": "2.0", "method": "event", "params": {"seq": seq, "type": kind, "terminal": terminal, "data": data}});
+        for w in subs {
+            if let Some(ctx) = w.upgrade() {
+                let _ = ctx.send_json(&ev);
+            }
+        }
     }
 
     fn get(&self, address: &str) -> Result<Value, Fail> {
@@ -202,23 +236,33 @@ impl Fixture {
 
     /// `terminal.kill`: the terminal finishes; every viewer gets CLOSE `killed`.
     fn kill(&self, address: &str) -> Result<Value, Fail> {
+        self.finish(address, "killed", None)
+    }
+
+    /// End a live terminal: state `finished`, every viewer gets CLOSE with the reason, subscribers
+    /// get `finished`. A terminal that already finished is returned as it is.
+    fn finish(&self, address: &str, reason: &str, exit_code: Option<i64>) -> Result<Value, Fail> {
         let (rec, streams) = {
             let mut core = self.core.lock().unwrap();
             let t = core.terminals.iter_mut().find(|t| t["address"] == address).ok_or(("not_found", format!("no terminal \"{address}\"")))?;
             let was_live = t["state"] != "finished";
             if was_live {
                 t["state"] = json!("finished");
-                t["reason"] = json!("killed");
+                t["reason"] = json!(reason);
+                t["exit_code"] = json!(exit_code);
                 t["foreground"] = Value::Null;
                 t["status"] = Value::Null;
             }
             let rec = t.clone();
-            (rec, if was_live { core.streams.remove(address).unwrap_or_default() } else { Vec::new() })
+            (rec, if was_live { Some(core.streams.remove(address).unwrap_or_default()) } else { None })
         };
-        let reason = json!({"reason": "killed", "exit_code": null, "signal": null}).to_string().into_bytes();
+        let Some(streams) = streams else { return Ok(rec) };
+        let close = json!({"reason": reason, "exit_code": exit_code, "signal": null}).to_string().into_bytes();
         for s in streams {
-            s.close(reason.clone());
+            s.close(close.clone());
         }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        self.emit("finished", address, json!({"reason": reason, "exit_code": exit_code, "signal": null, "finished_ms": now}));
         Ok(rec)
     }
 
@@ -231,6 +275,8 @@ impl Fixture {
         }
         core.terminals.remove(i);
         core.screens.remove(address);
+        drop(core);
+        self.emit("removed", address, json!({}));
         Ok(json!({"removed": address}))
     }
 
@@ -293,6 +339,8 @@ struct Stream {
     terminal: String,
     out: SharedWriter,
     state: Mutex<StreamState>,
+    /// The latest input bytes, for the fixture's `exit_on`.
+    typed: Mutex<Vec<u8>>,
 }
 
 impl Stream {
@@ -302,6 +350,7 @@ impl Stream {
             terminal: terminal.to_owned(),
             out,
             state: Mutex::new(StreamState { window: SendWindow::default(), queue: VecDeque::new(), held: true, done: false }),
+            typed: Mutex::default(),
         })
     }
 
@@ -404,7 +453,8 @@ impl Ctx {
     fn log(&self, line: &Value) {
         let Some(path) = &self.log_path else { return };
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{line}");
+            // One write per line: connections log from several threads.
+            let _ = f.write_all(format!("{line}\n").as_bytes());
         }
     }
 
@@ -442,6 +492,7 @@ impl Ctx {
             "terminal.rm" => fx.rm(Self::address(params)),
             "terminal.attach" => self.attach(params),
             "events.subscribe" => {
+                fx.core.lock().unwrap().subscribers.push(Arc::downgrade(self));
                 let (events, me) = (fx.timed_events(), self.clone());
                 let _ = std::thread::Builder::new().name("hc-fake-events".into()).spawn(move || {
                     let mut at = 0;
@@ -507,6 +558,19 @@ impl Ctx {
                 if self.fx.echo() {
                     for v in self.fx.viewers(&terminal) {
                         v.push(payload);
+                    }
+                }
+                // Keys can arrive one frame each: look at the tail of the input.
+                if let Some(x) = self.fx.exit_on() {
+                    let hit = {
+                        let mut typed = stream.typed.lock().unwrap();
+                        typed.extend_from_slice(payload);
+                        let over = typed.len().saturating_sub(x.len());
+                        typed.drain(..over);
+                        typed.as_slice() == x.as_bytes()
+                    };
+                    if hit {
+                        let _ = self.fx.finish(&terminal, "exited", Some(0));
                     }
                 }
             }
@@ -853,6 +917,50 @@ mod tests {
         assert_eq!(run("b").unwrap()["address"], "t10");
         let list = c.call("terminal.list", json!({}), T).unwrap();
         assert_eq!(list["terminals"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn subscribers_get_created_finished_and_removed() {
+        let (tx, rx) = channel();
+        let fx = Arc::new(Fixture::from_value(json!({})));
+        // One connection subscribes, another changes the terminals.
+        let dial = |fx: Arc<Fixture>, notes| {
+            let (req_r, req_w) = pipe();
+            let (rep_r, rep_w) = pipe();
+            std::thread::spawn(move || serve_logged(fx, Box::new(req_r), Box::new(rep_w), None));
+            Conn::new(Box::new(rep_r), Box::new(req_w), notes)
+        };
+        let watcher = dial(fx.clone(), Some(tx));
+        watcher.call("events.subscribe", json!({}), T).unwrap();
+        let actor = dial(fx, None);
+        actor.call("terminal.run", json!({"name": "a", "cwd": "/tmp", "labels": {"role": "terminal"}}), T).unwrap();
+        actor.call("terminal.kill", json!({"terminal": "t1"}), T).unwrap();
+        actor.call("terminal.kill", json!({"terminal": "t1"}), T).unwrap();
+        actor.call("terminal.rm", json!({"terminal": "t1"}), T).unwrap();
+        let evs: Vec<Value> = (0..3).map(|_| rx.recv_timeout(T).unwrap().params).collect();
+        assert_eq!(evs.iter().map(|e| e["type"].as_str().unwrap()).collect::<Vec<_>>(), ["created", "finished", "removed"]);
+        assert!(evs.iter().all(|e| e["terminal"] == "t1"));
+        assert_eq!(evs.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3], "a second kill of a finished terminal is no event");
+        assert_eq!((evs[0]["data"]["address"].as_str(), evs[0]["data"]["labels"]["role"].as_str()), (Some("t1"), Some("terminal")));
+        assert_eq!((evs[1]["data"]["reason"].as_str(), evs[2]["data"].clone()), (Some("killed"), json!({})));
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+    }
+
+    #[test]
+    fn exit_on_input_ends_the_terminal_like_a_shell() {
+        let (c, _) = framed(json!({"exit_on": "exit\r", "terminals": [{"address": "t1", "state": "live"}]}), None);
+        let (ch, rx) = attach(&c, "t1");
+        data(&rx, PAINT.len());
+        // One frame per key, as typing sends them.
+        for b in [&b"x"[..], b"exit", b"\r"] {
+            c.data(ch, b).unwrap();
+        }
+        match rx.recv_timeout(T).unwrap() {
+            StreamEvent::Close(i) => assert_eq!((i.reason.as_deref(), i.exit_code), (Some("exited"), Some(0))),
+            other => panic!("{other:?}"),
+        }
+        let t = c.call("terminal.get", json!({"terminal": "t1"}), T).unwrap();
+        assert_eq!((t["state"].as_str(), t["reason"].as_str(), t["exit_code"].as_i64()), (Some("finished"), Some("exited"), Some(0)));
     }
 
     #[test]
