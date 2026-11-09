@@ -9,6 +9,7 @@
 //! (⌘F; ⌘G / ⌘⇧G or Return / Shift+Return step, esc closes), Ctrl+Shift+D split (⌘D), Ctrl+Shift+[ / ]
 //! focus the left / right pane (⌘[ / ⌘]), Ctrl+Shift+J the questions card (⌘J).
 
+mod agents;
 mod agents_config;
 mod cli;
 mod dialog;

@@ -2,9 +2,6 @@
 //! K2, go:internal/agents/agents.go and flow.go). A file is read over the defaults; a save keeps
 //! the keys this code does not know.
 
-// The callers arrive with D4a (`agents spawn`, `flow`) and the settings tabs.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -147,7 +144,7 @@ impl Default for Config {
 }
 
 /// The value after `flag` (or `flag=`) in `argv`, or "".
-fn flag_value(argv: &[String], flag: &str) -> String {
+pub fn flag_value(argv: &[String], flag: &str) -> String {
     for (i, a) in argv.iter().enumerate() {
         if a == flag {
             if let Some(v) = argv.get(i + 1) {
@@ -163,11 +160,13 @@ fn flag_value(argv: &[String], flag: &str) -> String {
 
 impl Config {
     /// The model the profile starts (`--model`); "" for an unknown profile or none.
+    #[allow(dead_code)] // used by D5 (hook stop)
     pub fn model_of(&self, profile: &str) -> String {
         self.profiles.get(profile).map(|p| flag_value(&p.argv, "--model")).unwrap_or_default()
     }
 
     /// The effort the profile starts (`--effort`); "" for an unknown profile or none.
+    #[allow(dead_code)] // used by D5 (hook stop)
     pub fn effort_of(&self, profile: &str) -> String {
         self.profiles.get(profile).map(|p| flag_value(&p.argv, "--effort")).unwrap_or_default()
     }
@@ -215,6 +214,7 @@ impl Config {
     /// Writes the config to `path` (tmp file, then rename). Keys of the file that this code does
     /// not know stay as they are. A profile goes to the file only when the file had it or when it
     /// differs from the default, so the file does not freeze today's defaults (D186).
+    #[allow(dead_code)] // used by C7/C8 (settings tabs)
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let fail = |e: &dyn std::fmt::Display| format!("agents: {}: {e}", path.display());
         let mut raw = match std::fs::read_to_string(path) {
@@ -258,6 +258,7 @@ impl Config {
     }
 }
 
+#[allow(dead_code)] // used by `save`
 fn value<T: Serialize>(v: &T) -> Value {
     serde_json::to_value(v).expect("plain data serialises")
 }

@@ -1,6 +1,8 @@
 //! The standalone `contr-rune <command>` CLI. It runs before Rune starts, so a CLI call never
 //! opens a window. Exit codes: 0 ok, 1 error, 2 usage (PARITY-PLAN K4).
 
+mod agents;
+
 use std::ffi::OsString;
 
 const USAGE: &str = "\
@@ -17,7 +19,7 @@ commands:
 With no command, contr-rune opens the app.";
 
 /// The commands that are still stubs; each part replaces its entry.
-const STUBS: [&str; 5] = ["agents", "owner", "hook", "mcp", "statusline"];
+const STUBS: [&str; 4] = ["owner", "hook", "mcp", "statusline"];
 
 /// Runs a CLI call and returns its exit code, or `None` when the arguments are not a CLI call
 /// (no argument, or the app's own `--` flags): then the app starts.
@@ -29,11 +31,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Option<i32> {
     }
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
-    Some(dispatch(first, &mut out, &mut err))
+    Some(dispatch(&args, &mut out, &mut err))
 }
 
-fn dispatch(cmd: &str, out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
-    match cmd {
+fn dispatch(args: &[String], out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
+    match args[0].as_str() {
+        "agents" => agents::run(&args[1..], &agents::Env::real(), out, err),
         "help" => {
             let _ = writeln!(out, "{USAGE}");
             0
@@ -59,7 +62,7 @@ mod tests {
 
     fn call(cmd: &str) -> (i32, String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = dispatch(cmd, &mut out, &mut err);
+        let code = dispatch(&[cmd.to_owned()], &mut out, &mut err);
         (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
     }
 
