@@ -75,6 +75,11 @@ pub const VALUE: TextStyle = TextStyle::new(11.5, 400.0).mono().lh(16.0);
 pub const META: TextStyle = TextStyle::new(11.0, 400.0).mono().lh(16.0);
 pub const COUNT: TextStyle = TextStyle::new(11.0, 500.0).mono().lh(14.0);
 
+/// The Claude mark's colour (a brand colour, not chrome: the kit has no slot for it).
+pub fn claude_color() -> Color {
+    srgb(0xd97757)
+}
+
 /// Terminal line height (`terminal`: 13/20).
 pub const LINE_H: f32 = 20.0;
 /// Terminal panel padding (`main.html`: 14px 20px 12px).

@@ -3,8 +3,11 @@
 //! the UI over an mpsc channel and wakes the window. Reconnect: 0.5 s doubled to 5 s.
 //!
 //! H1 keeps the state; H4 also forwards the events that matter to tabs (`restarted`, `finished`,
-//! `removed`); applying the rest to a terminal map comes with H5/H6.
+//! `removed`). H5 keeps the terminal list (the snapshot of `events.subscribe`, then `model::apply`
+//! per event) with the time of each terminal's last event, and sends it after every change; the
+//! rest of the event kinds are applied in H6.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
@@ -13,6 +16,7 @@ use serde_json::json;
 
 use super::conn::{Conn, Note};
 use super::dial::{Dialer, Keep};
+use super::model;
 use super::wire::{Event, HelloResult, ServerStatus, Snapshot, Terminal};
 
 const CALL: Duration = Duration::from_secs(10);
@@ -74,6 +78,8 @@ pub enum HcUpdate {
     Event { terminal: String, kind: TermEvent },
     /// The launch listing of this app's tabs (`restore::list`).
     Restore(Result<Vec<Terminal>, String>),
+    /// The terminals the core has now, with the time (ms) of each one's last event.
+    Terminals { terminals: Vec<Terminal>, stamps: HashMap<String, u64> },
 }
 
 /// The update a notification makes, if any.
@@ -195,35 +201,62 @@ fn hold(d: &Dialer, publish: &dyn Fn(HcStatus) -> bool, send: &dyn Fn(HcUpdate) 
     };
     // The events line first, so a core that cannot stream is not reported as connected.
     let (note_tx, note_rx) = channel();
-    let events = match subscribe(d, note_tx) {
+    let (events, snapshot) = match subscribe(d, note_tx) {
         Ok(o) => o,
         Err(e) => return (false, e),
     };
     if !publish(HcStatus::Connected { version }) {
         return (true, String::new());
     }
-    forward_until_loss(&note_rx, send);
+    forward_until_loss(&note_rx, send, snapshot.terminals);
     drop(events);
     (true, "connection lost".to_owned())
 }
 
-fn subscribe(d: &Dialer, notes: Sender<Note>) -> Result<Opened, String> {
+fn subscribe(d: &Dialer, notes: Sender<Note>) -> Result<(Opened, Snapshot), String> {
     let o = open(d, Some(notes))?;
     handshake(&o.conn, false).map_err(|e| o.explain(e))?;
     let snap = o.conn.call("events.subscribe", json!({}), CALL).map_err(|e| o.explain(e))?;
-    serde_json::from_value::<Snapshot>(snap).map_err(|e| format!("bad events.subscribe reply: {e}"))?;
-    Ok(o)
+    let snap = serde_json::from_value::<Snapshot>(snap).map_err(|e| format!("bad events.subscribe reply: {e}"))?;
+    Ok((o, snap))
 }
 
-/// Forward the events tabs care about until the events line ends or goes silent.
-fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool) {
+/// Keep the terminal list current and send it (and the events tabs care about) until the events
+/// line ends or goes silent.
+fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool, mut terminals: Vec<Terminal>) {
+    let mut stamps: HashMap<String, u64> = HashMap::new();
+    if !send(HcUpdate::Terminals { terminals: terminals.clone(), stamps: stamps.clone() }) {
+        return;
+    }
     while let Ok(note) = rx.recv_timeout(SILENCE) {
         if let Some(u) = to_update(&note)
             && !send(u)
         {
             return;
         }
+        let Some(ev) = (note.method == "event").then(|| serde_json::from_value::<Event>(note.params.clone()).ok()).flatten() else { continue };
+        let Some(addr) = ev.terminal.clone() else { continue };
+        let changed = model::apply(&mut terminals, &ev);
+        stamps.insert(addr.clone(), crate::session::now_ms());
+        if !terminals.iter().any(|t| t.address == addr) {
+            stamps.remove(&addr);
+        }
+        if changed && !send(HcUpdate::Terminals { terminals: terminals.clone(), stamps: stamps.clone() }) {
+            return;
+        }
     }
+}
+
+/// Every terminal the core has (`terminal.list`), on a short-lived plain connection: the first
+/// listing of a headless run, which cannot wait for the watcher thread.
+pub fn list_all(d: &Dialer) -> Result<Vec<Terminal>, String> {
+    let link = d.dial().map_err(|e| e.to_string())?;
+    let conn = Conn::new(link.reader, link.writer, None);
+    handshake(&conn, false)?;
+    let v = conn.call("terminal.list", json!({"all": false}), CALL).map_err(|e| e.to_string())?;
+    let list: super::wire::TerminalList = serde_json::from_value(v).map_err(|e| format!("bad terminal.list reply: {e}"))?;
+    drop(link.keep);
+    Ok(list.terminals)
 }
 
 #[cfg(test)]
@@ -313,7 +346,39 @@ mod tests {
         let ev = json!({"after_ms": 50, "method": "event", "params": {"seq": 1, "type": "finished", "terminal": "t3", "data": {"reason": "exited"}}});
         let (tx, rx) = channel();
         spawn_events(fake(json!({"events": [ev]})), tx, Arc::new(|| {}));
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HcUpdate::Terminals { .. }), "the snapshot comes first");
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HcUpdate::Event { terminal: "t3".into(), kind: TermEvent::Finished });
+    }
+
+    #[test]
+    fn the_watcher_keeps_the_terminal_list_with_event_stamps() {
+        let rec = |a: &str| json!({"address": a, "state": "live", "labels": {}});
+        let ev = |ms: u64, seq: u64, ty: &str, t: &str, data: Value| json!({"after_ms": ms, "method": "event", "params": {"seq": seq, "type": ty, "terminal": t, "data": data}});
+        let fx = json!({"terminals": [rec("t1")], "events": [
+            ev(50, 1, "created", "t2", rec("t2")),
+            ev(100, 2, "removed", "t1", json!({})),
+        ]});
+        let (tx, rx) = channel();
+        spawn_events(fake(fx), tx, Arc::new(|| {}));
+        let mut lists = Vec::new();
+        while lists.len() < 3 {
+            if let HcUpdate::Terminals { terminals, stamps } = rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                lists.push((terminals.iter().map(|t| t.address.clone()).collect::<Vec<_>>(), stamps));
+            }
+        }
+        assert_eq!(lists[0].0, vec!["t1"]);
+        assert!(lists[0].1.is_empty());
+        assert_eq!(lists[1].0, vec!["t1", "t2"]);
+        assert!(lists[1].1["t2"] > 0);
+        assert_eq!(lists[2].0, vec!["t2"]);
+        assert!(!lists[2].1.contains_key("t1"), "a removed terminal has no stamp");
+    }
+
+    #[test]
+    fn list_all_reads_every_terminal() {
+        let fx = json!({"terminals": [{"address": "t1"}, {"address": "t2"}]});
+        let all = list_all(&fake(fx)).unwrap();
+        assert_eq!(all.iter().map(|t| t.address.as_str()).collect::<Vec<_>>(), vec!["t1", "t2"]);
     }
 
     #[test]

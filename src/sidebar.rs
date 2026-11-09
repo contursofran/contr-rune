@@ -1,8 +1,12 @@
 //! The sidebar (K4): rune-kit's `Sidebar` and `SidebarRow`. A "Projects" head with `+` (open a
 //! folder), each project with its terminals under it, then "Servers" and the settings gear.
 //!
-//! Element keys: `add-project`, `project-<i>`, `add-<i>` (the project's hover `+`), `term-<id>`,
-//! `server-this-mac`, `settings`.
+//! Under a project come its agents (H5): each orchestrator, then its workers one level deeper (the
+//! order and nesting come from `hc::model::lines`), then the project's terminal tabs.
+//!
+//! Element keys: `add-project`, `project-<i>`, `add-<i>` (the project's hover `+`),
+//! `agent/<address>` (with `glyph`, `subtitle` = the meta line and `detail` = the age inside),
+//! `term-<id>`, `server-this-mac`, `settings`.
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -11,6 +15,7 @@ use rune::{El, FileDialogOptions, Icon, el, icon, row, spacer, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
 
+use crate::hc::model::{self, AgentState, Line};
 use crate::session::now_ms;
 use crate::theme;
 use crate::{App, PLUS, Project, Status, TERM, shell};
@@ -26,6 +31,12 @@ static FOLDER: Icon = Icon {
     view: 16.0,
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.5 1.6h5.9a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></g>"#,
 };
+// The Claude mark, as in `examples/kit_preview.rs`.
+static CLAUDE: Icon = Icon {
+    name: "contr-claude",
+    view: 16.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.19 8.17L14.93 8.97M8.95 8.74L12.10 11.20M8.45 9.11L10.40 13.93M7.83 9.19L7.33 12.75M7.26 8.95L3.81 13.36M6.89 8.45L2.99 10.02M6.81 7.83L1.86 7.14M7.05 7.26L4.06 4.92M7.55 6.89L5.38 1.51M8.17 6.81L8.72 2.85M8.74 7.05L11.69 3.27M9.11 7.55L12.54 6.16"/></g>"#,
+};
 static LAPTOP: Icon = Icon {
     name: "contr-laptop",
     view: 16.0,
@@ -34,6 +45,10 @@ static LAPTOP: Icon = Icon {
 
 /// A terminal row is two lines (title, mono subtitle) under its project.
 const TERMINAL_ROW_HEIGHT: f32 = 48.0;
+
+/// An orchestrator row is two lines at 48; a worker row is 44 (as the kit preview).
+const ORCHESTRATOR_ROW_HEIGHT: f32 = 48.0;
+const WORKER_ROW_HEIGHT: f32 = 44.0;
 
 /// The branch meta gets at most this width and this many characters; the project name keeps the rest.
 const META_MAX_W: f32 = 96.0;
@@ -142,6 +157,38 @@ fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
         .key(format!("project-{i}"))
 }
 
+/// The row's lead: the Claude mark for an orchestrator, else a braille glyph (busy, or at rest).
+/// Red only for an agent that needs you.
+fn agent_glyph(k: &Kit, line: &Line) -> El {
+    let a = line.agent;
+    if a.is_orchestrator() {
+        return icon(&CLAUDE, 16.0).key("glyph").color(theme::claude_color());
+    }
+    let (glyph, color) = match a.state {
+        AgentState::NeedsYou { .. } => ("⠋", k.c.danger.icon),
+        AgentState::Working => ("⠋", k.c.text_base),
+        _ => ("⠶", k.c.text_faint),
+    };
+    text(glyph).key("glyph").font(theme::GLYPH).color(color)
+}
+
+fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
+    let a = line.agent;
+    let address = a.address.clone();
+    SidebarRow::new(a.display_title().to_owned())
+        .avatar(agent_glyph(k, line))
+        .subtitle(model::meta(line))
+        .subtitle_style(theme::META)
+        .title_style(theme::BODY)
+        .detail(fmt_age(a.age_ms / 1000))
+        .height(if line.depth <= 1 { ORCHESTRATOR_ROW_HEIGHT } else { WORKER_ROW_HEIGHT })
+        .depth(line.depth)
+        .selected(s.selected_agent.as_deref() == Some(a.address.as_str()))
+        .on_select(move |s: &mut App, _tx| s.select_agent(address.clone()))
+        .build(k)
+        .key(format!("agent/{}", a.address))
+}
+
 fn terminal_row(k: &Kit, s: &App, t: &crate::Tab) -> El {
     let id = t.session.id();
     let age = now_ms().saturating_sub(t.session.last_output().load(Ordering::Relaxed)) / 1000;
@@ -181,6 +228,9 @@ pub fn view(k: &Kit, s: &App) -> El {
             list = list.child(el().h(10.0));
         }
         list = list.child(project_row(k, s, i, p));
+        for line in model::lines(&s.agents, i) {
+            list = list.child(agent_row(k, s, &line));
+        }
         for t in s.project_tabs(i) {
             list = list.child(terminal_row(k, s, t));
         }
