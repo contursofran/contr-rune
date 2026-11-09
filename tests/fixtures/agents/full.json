@@ -1,0 +1,23 @@
+{
+  "kit": "/work/contr/kit",
+  "profiles": {
+    "builder": {
+      "argv": ["claude", "--model=opus", "--effort", "high"]
+    },
+    "planner-high": {
+      "argv": ["claude", "--model", "opus", "--effort", "high"],
+      "agent": "planner"
+    }
+  },
+  "setup": {
+    "~/code/app": "npm ci"
+  },
+  "flow": {
+    "plan": "always",
+    "review": "every",
+    "debugger_after": 3,
+    "workers": 6,
+    "merge": "auto"
+  },
+  "theme": {"accent": "blue"}
+}
