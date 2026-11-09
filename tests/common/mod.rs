@@ -143,6 +143,7 @@ impl App {
         cmd.env_remove("CONTR_HC_FAKE")
             .env_remove("CONTR_HC")
             .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
+            .env("CONTR_AGENTS_CONFIG", dir.join("no-agents.json"))
             .env("CONTR_PROJECTS", &projects)
             .env("CONTR_HC_FAKE_LOG", &log)
             .args(["--script", script.to_str().unwrap(), "--tree", out.to_str().unwrap(), "--size", "1710x1112", "--scale", "1", "--at", "mark:end"]);
