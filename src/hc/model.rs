@@ -704,6 +704,11 @@ mod tests {
         let mut idle_kid = kid.clone();
         idle_kid.status = None;
         assert_eq!(run(&[orch.clone(), idle_kid.clone(), grand], 10)[0].state, AgentState::Idle);
+        // A blocked child needs the user: it does not make the orchestrator wait.
+        let mut blocked_kid = kid.clone();
+        blocked_kid.status = status("blocked", Some("question"));
+        let a = run(&[orch.clone(), blocked_kid], 10);
+        assert_eq!((&a[0].state, &a[1].state), (&AgentState::Idle, &AgentState::NeedsYou { kind: Some("question".into()), msg: "ok?".into() }));
         let mut done_kid = kid;
         done_kid.state = "finished".into();
         assert_eq!(run(&[orch, done_kid], 10)[0].state, AgentState::Idle);

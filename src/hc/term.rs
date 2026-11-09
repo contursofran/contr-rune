@@ -42,8 +42,6 @@ use crate::session::{Events, SCROLLBACK, Size, now_ms, shell_name, subtitle, tab
 const CALL: Duration = Duration::from_secs(10);
 /// Scrollback the core replays on attach.
 const HISTORY: u32 = 1000;
-/// How often an attached stream looks for a `restarted` event or a closed tab.
-const POLL: Duration = Duration::from_millis(250);
 
 /// Whose terminal a tab shows. contr-rune makes plain terminal tabs (role=terminal), so it owns them:
 /// closing the tab kills and removes the terminal. An agent's terminal (H8) belongs to the core and
@@ -643,7 +641,7 @@ impl Feed {
         let mut ledger = Ledger::default();
         let seen = self.shared.state.lock().unwrap().epoch;
         loop {
-            let ev = match a.rx.recv_timeout(POLL) {
+            let ev = match a.rx.recv_timeout(self.shared.spec.dialer.poll()) {
                 Ok(ev) => ev,
                 Err(RecvTimeoutError::Timeout) => {
                     if self.over() {

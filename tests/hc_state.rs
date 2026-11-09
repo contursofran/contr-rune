@@ -4,74 +4,60 @@
 //! `agent/<address>` row says its state in its label: `working`, `waiting`, `needs you` or
 //! `idle`. Needs-you is the only red; its row carries the message as help. No test dials a real hc.
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod common;
 
+use std::sync::OnceLock;
+
+use common::*;
 use serde_json::{Value, json};
-
-struct Run {
-    tree: Value,
-    dir: PathBuf,
-}
 
 fn status(state: &str, kind: Option<&str>, msg: &str) -> Value {
     json!({"state": state, "kind": kind, "msg": msg, "title": "", "app": "claude-code", "progress": null})
 }
 
-fn event(after_ms: u64, seq: u64, ty: &str, terminal: &str, data: Value) -> Value {
-    json!({"after_ms": after_ms, "method": "event", "params": {"seq": seq, "type": ty, "terminal": terminal, "data": data}})
-}
-
 fn set_status(after_ms: u64, seq: u64, terminal: &str, st: Value) -> Value {
-    event(after_ms, seq, "status", terminal, json!({"status": st, "records": {}, "reported": true}))
+    hc_event(after_ms, seq, "status", terminal, json!({"status": st, "records": {}, "reported": true}))
 }
 
-/// The fixture with its `events` replaced (`None` keeps its own) and the folder set.
+/// The fixture with its `events` replaced (`None` keeps its own) and the folder set. The events
+/// are in by 350 ms of script time, so t = 1 leaves them time.
 fn run(events: Option<Vec<Value>>) -> Run {
-    static RUNS: AtomicUsize = AtomicUsize::new(0);
-    let id = format!("{}-{}", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed));
-    let dir = std::env::temp_dir().join(format!("contr-rune-hcstate-{id}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    let proj = dir.join("contr");
-    std::fs::create_dir_all(&proj).unwrap();
-    let mut fx: Value = serde_json::from_str(include_str!("fixtures/hc/blocked.json")).unwrap();
-    for t in fx["terminals"].as_array_mut().unwrap() {
-        t["cwd"] = json!(proj.to_string_lossy());
-    }
-    if let Some(e) = events {
-        fx["events"] = json!(e);
-    }
-    let (script, out, fixture) = (dir.join("script.json"), dir.join("tree.json"), dir.join("fixture.json"));
-    // The first listing is in at once, the fixture's events by 350 ms; t = 6 leaves them time.
-    std::fs::write(&script, json!({ "events": [{ "t": 6.0, "type": "mark", "name": "end" }] }).to_string()).unwrap();
-    std::fs::write(&fixture, fx.to_string()).unwrap();
-    let r = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
-        .env_remove("CONTR_HC")
-        .env("CONTR_HC_FAKE", &fixture)
-        .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
-        .env("CONTR_PROJECTS", &proj)
-        .args(["--script", script.to_str().unwrap(), "--tree", out.to_str().unwrap(), "--size", "1710x1112", "--scale", "1", "--scene", "agents", "--at", "mark:end"])
-        .output()
-        .expect("run the app");
-    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
-    Run { tree: serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap(), dir }
+    App::new()
+        .project("contr")
+        .scene("agents")
+        .fixture_with(move |d| {
+            let mut fx: Value = serde_json::from_str(include_str!("fixtures/hc/blocked.json")).unwrap();
+            for t in fx["terminals"].as_array_mut().unwrap() {
+                t["cwd"] = json!(d.proj);
+            }
+            if let Some(e) = events {
+                fx["events"] = json!(e);
+            }
+            fx
+        })
+        .end(1.0)
+        .run()
 }
 
-impl Drop for Run {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+/// The launch with the fixture's own events: shared by the tests that read it.
+fn calm() -> &'static Run {
+    static RUN: OnceLock<Run> = OnceLock::new();
+    RUN.get_or_init(|| run(None))
 }
 
-impl Run {
-    fn elements(&self) -> &Vec<Value> {
-        self.tree["elements"].as_array().unwrap()
-    }
+/// The rows of the agents scene.
+trait Agents {
+    fn row(&self, address: &str) -> Option<&Value>;
+    fn glyph(&self, address: &str) -> &Value;
+    fn state(&self, address: &str) -> String;
+    fn subtitle(&self, address: &str) -> Option<String>;
+    fn rows(&self) -> Vec<String>;
+}
 
+impl Agents for Run {
     fn row(&self, address: &str) -> Option<&Value> {
         let key = format!("agent/{address}");
-        self.elements().iter().find(|e| e["key"] == key.as_str())
+        self.find(&key)
     }
 
     /// The `glyph` inside the row of `address`.
@@ -88,8 +74,7 @@ impl Run {
     }
 
     fn subtitle(&self, address: &str) -> Option<String> {
-        let marker = format!("/agent/{address}/");
-        self.elements().iter().find(|e| e["key"] == "subtitle" && e["path"].as_str().is_some_and(|p| p.contains(&marker))).and_then(|e| e["text"].as_str().map(str::to_owned))
+        self.text_in(&format!("agent/{address}"), "subtitle")
     }
 
     fn rows(&self) -> Vec<String> {
@@ -105,7 +90,7 @@ impl Run {
 
 #[test]
 fn events_turn_one_worker_working_and_another_needs_you() {
-    let r = run(None);
+    let r = calm();
     assert_eq!(r.rows(), vec!["t3", "t18", "t19"]);
     assert_eq!(r.state("t18"), "working");
     assert_eq!(r.state("t19"), "needs you");
@@ -117,7 +102,7 @@ fn events_turn_one_worker_working_and_another_needs_you() {
 
 #[test]
 fn needs_you_is_red_and_nothing_else_is() {
-    let r = run(None);
+    let r = calm();
     // The ink of a glyph: its own colour, else the colour of the first text inside it (the braille frames).
     let color = |a: &str| -> (u8, u8, u8) {
         let marker = format!("/agent/{a}/");
@@ -135,7 +120,7 @@ fn needs_you_is_red_and_nothing_else_is() {
 
 #[test]
 fn a_needs_you_row_carries_its_message_as_help() {
-    let r = run(None);
+    let r = calm();
     let help = |a: &str| r.row(a).and_then(|e| e["help"].as_str().map(str::to_owned));
     assert_eq!(help("t19").as_deref(), Some("Run cargo test?"));
     assert_eq!(help("t18"), None);
@@ -147,13 +132,6 @@ fn an_orchestrator_with_no_working_child_is_idle() {
     assert_eq!(r.state("t18"), "idle");
     assert_eq!(r.state("t3"), "idle");
     assert_eq!(r.subtitle("t3").as_deref(), Some("opus  idle"));
-}
-
-#[test]
-fn a_blocked_child_does_not_make_the_orchestrator_wait() {
-    let r = run(Some(vec![set_status(100, 11, "t19", status("blocked", Some("question"), "Which one?"))]));
-    assert_eq!(r.state("t19"), "needs you");
-    assert_eq!(r.state("t3"), "idle");
 }
 
 #[test]
@@ -180,7 +158,7 @@ fn a_missed_snapshot_replaces_the_state_and_older_events_are_dropped() {
 fn an_ended_agent_has_no_row_and_the_orchestrator_stops_waiting() {
     let r = run(Some(vec![
         set_status(100, 11, "t18", status("working", None, "")),
-        event(200, 12, "finished", "t18", json!({"reason": "exited", "exit_code": 0, "signal": null, "finished_ms": 1})),
+        hc_event(200, 12, "finished", "t18", json!({"reason": "exited", "exit_code": 0, "signal": null, "finished_ms": 1})),
     ]));
     assert_eq!(r.rows(), vec!["t3", "t19"]);
     assert_eq!(r.state("t3"), "idle");
@@ -193,7 +171,7 @@ fn a_tab_whose_program_is_blocked_shows_needs_attention() {
     let dot = |r: &Run| r.elements().iter().any(|e| e["path"].as_str().is_some_and(|p| p.contains("/term-1/status/status-mark/")) && e["rect"][2] == 7.0 && e["rect"][3] == 7.0);
     let r = run(Some(vec![set_status(250, 13, "t20", status("blocked", Some("permission"), "Run it?"))]));
     assert!(dot(&r), "the blocked tab has the attention dot");
-    assert!(!dot(&run(None)), "a calm tab has none");
+    assert!(!dot(calm()), "a calm tab has none");
 }
 
 #[test]
@@ -202,7 +180,6 @@ fn a_missed_snapshot_without_the_tab_terminal_closes_the_tab() {
     let fx: Value = serde_json::from_str(include_str!("fixtures/hc/blocked.json")).unwrap();
     let missed = json!({"after_ms": 250, "method": "missed", "params": {"seq": 20, "terminals": fx["terminals"]}});
     let r = run(Some(vec![missed]));
-    assert!(!r.elements().iter().any(|e| e["key"] == "term-1"), "the tab row is gone");
-    let calm = run(None);
-    assert!(calm.elements().iter().any(|e| e["key"] == "term-1"), "without the snapshot the tab stays");
+    assert!(!r.has("term-1"), "the tab row is gone");
+    assert!(calm().elements().iter().any(|e| e["key"] == "term-1"), "without the snapshot the tab stays");
 }

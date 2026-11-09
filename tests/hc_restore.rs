@@ -6,25 +6,18 @@
 //! tab; `restarted` re-attaches; `finished` and `removed` close the tab; quitting kills nothing.
 //! Elements: tabs `t-<id>`, grid rows `l<N>`, `hc-banner`, sidebar `project-<i>`. No test dials a
 //! real hc.
+//!
+//! In a headless run the fake core's clock is the script's: a fixture event with `after_ms` 600
+//! fires at script time 0.6, so the tree is read at t = 2.
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod common;
 
+use std::sync::OnceLock;
+
+use common::*;
 use serde_json::{Value, json};
 
-struct Run {
-    tree: Value,
-    log: Vec<Value>,
-    dir: PathBuf,
-}
-
-/// The scratch folders of one run.
-struct Dirs {
-    proj: String,
-    other: String,
-    gone: String,
-}
+const PROJECT: &str = "contr-rune";
 
 fn term(address: &str, created: u64, worktree: &str) -> Value {
     json!({
@@ -33,80 +26,8 @@ fn term(address: &str, created: u64, worktree: &str) -> Value {
     })
 }
 
-fn tap(t: f64, key: &str) -> Value { json!({ "t": t, "type": "tap", "key": key }) }
-
-/// Run the app headless with the fixture `fx(dirs)` until t = 8 (the terminals are up by t = 2).
-fn run(fx: impl Fn(&Dirs) -> Value, mut events: Vec<Value>) -> Run {
-    events.push(json!({ "t": 8.0, "type": "mark", "name": "end" }));
-    static RUNS: AtomicUsize = AtomicUsize::new(0);
-    let id = format!("{}-{}", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed));
-    let dir = std::env::temp_dir().join(format!("contr-rune-hcrestore-{id}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    let dirs = Dirs { proj: dir.join("contr-rune").to_string_lossy().into_owned(), other: dir.join("other").to_string_lossy().into_owned(), gone: dir.join("gone").to_string_lossy().into_owned() };
-    std::fs::create_dir_all(&dirs.proj).unwrap();
-    std::fs::create_dir_all(&dirs.other).unwrap();
-    let (script, out, log, fixture) = (dir.join("script.json"), dir.join("tree.json"), dir.join("log.jsonl"), dir.join("fixture.json"));
-    std::fs::write(&script, json!({ "events": events }).to_string()).unwrap();
-    std::fs::write(&fixture, fx(&dirs).to_string()).unwrap();
-    let r = Command::new(env!("CARGO_BIN_EXE_contr-rune"))
-        .env_remove("CONTR_HC")
-        .env("CONTR_HC_FAKE", &fixture)
-        .env("CONTR_SETTINGS", "/nonexistent/contr-rune-settings.json")
-        .env("CONTR_PROJECTS", &dirs.proj)
-        .env("CONTR_HC_FAKE_LOG", &log)
-        .args(["--script", script.to_str().unwrap(), "--tree", out.to_str().unwrap(), "--size", "1710x1112", "--scale", "1", "--at", "mark:end"])
-        .output()
-        .expect("run the app");
-    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
-    let tree = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
-    let log = std::fs::read_to_string(&log).map(|t| t.lines().map(|l| serde_json::from_str(l).unwrap()).collect()).unwrap_or_default();
-    Run { tree, log, dir }
-}
-
-impl Drop for Run {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-impl Run {
-    fn calls(&self, method: &str) -> Vec<&Value> {
-        self.log.iter().filter(|l| l["method"] == method).collect()
-    }
-
-    /// The attaches to `terminal`, with their params.
-    fn attaches(&self, terminal: &str) -> Vec<&Value> {
-        self.log.iter().filter(|l| l["method"] == "terminal.attach" && l["params"]["terminal"] == terminal).map(|l| &l["params"]).collect()
-    }
-
-    fn keys(&self, role: &str) -> Vec<String> {
-        self.tree["elements"].as_array().unwrap().iter().filter(|e| e["role"] == role).map(|e| e["key"].as_str().unwrap().to_owned()).collect()
-    }
-
-    fn tabs(&self) -> Vec<String> {
-        self.keys("tab")
-    }
-
-    fn has(&self, key: &str) -> bool {
-        self.tree["elements"].as_array().unwrap().iter().any(|e| e["key"] == key)
-    }
-
-    /// The rows of the (left) grid as text.
-    fn grid(&self) -> String {
-        self.tree["elements"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|e| e["key"].as_str().is_some_and(|k| k.strip_prefix('l').is_some_and(|n| n.parse::<u32>().is_ok())))
-            .filter_map(|e| e["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// The focus frames sent for `terminal`, in order.
-    fn focus(&self, terminal: &str) -> Vec<bool> {
-        self.log.iter().filter(|l| l["frame"] == "focus" && l["terminal"] == terminal).map(|l| l["gained"].as_bool().unwrap()).collect()
-    }
+fn run(fx: impl FnOnce(&Dirs) -> Value + 'static, events: Vec<Value>) -> Run {
+    App::new().project(PROJECT).fixture_with(fx).events(events).end(2.0).run()
 }
 
 /// Two terminals of the project, created out of address order, with their screens.
@@ -118,9 +39,21 @@ fn two(d: &Dirs) -> Value {
     })
 }
 
+/// `two` with the second tab tapped: shared by the tests that read it.
+fn two_second_tab() -> &'static Run {
+    static RUN: OnceLock<Run> = OnceLock::new();
+    RUN.get_or_init(|| run(two, vec![tap(1.0, "t-2")]))
+}
+
+/// `two` with no input: shared by the tests that read it.
+fn two_untouched() -> &'static Run {
+    static RUN: OnceLock<Run> = OnceLock::new();
+    RUN.get_or_init(|| run(two, vec![]))
+}
+
 #[test]
 fn terminals_reopen_as_tabs_in_creation_order_with_their_first_paint() {
-    let r = run(two, vec![tap(3.0, "t-2")]);
+    let r = two_second_tab();
     assert_eq!(r.tabs(), vec!["t-1", "t-2"], "{:?}", r.log);
     assert!(r.calls("terminal.run").is_empty(), "nothing new is made: {:?}", r.log);
     // t-2 is the later one (t5) and is the tab shown after the tap.
@@ -138,8 +71,7 @@ fn terminals_reopen_as_tabs_in_creation_order_with_their_first_paint() {
 fn the_sample_fixture_matches_the_project_by_its_label() {
     // `tests/fixtures/hc/restore.json` (also used for the snapshot) names no folder: the project label
     // `contr-rune` finds the project. Created out of address order: t2, t5, t8 are the tabs 1 to 3.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hc/restore.json");
-    let r = run(|_| serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(), vec![tap(3.0, "t-3")]);
+    let r = App::new().project(PROJECT).fixture("restore.json").events(vec![tap(1.0, "t-3")]).end(2.0).run();
     assert_eq!(r.tabs(), vec!["t-1", "t-2", "t-3"]);
     assert!(r.grid().contains("Cargo.toml  src"), "{:?}", r.grid());
     assert!(r.calls("terminal.run").is_empty());
@@ -147,7 +79,7 @@ fn the_sample_fixture_matches_the_project_by_its_label() {
 
 #[test]
 fn the_first_restored_tab_is_the_one_shown() {
-    let r = run(two, vec![]);
+    let r = two_untouched();
     assert!(r.grid().contains("first-screen"), "{:?}", r.grid());
 }
 
@@ -160,7 +92,7 @@ fn a_tab_from_a_closed_project_adds_it_and_a_missing_folder_is_skipped() {
                 "screens": {"t2": "from-other\r\n"}
             })
         },
-        vec![tap(3.0, "project-1")],
+        vec![tap(1.0, "project-1")],
     );
     assert_eq!(r.tabs().len(), 1, "the new project shows its one tab: {:?}", r.tabs());
     assert!(r.has("project-1"), "the folder that exists became a project");
@@ -221,8 +153,7 @@ fn while_the_core_refuses_the_tab_stays_and_says_reconnecting() {
         vec![],
     );
     assert_eq!(r.tabs(), vec!["t-1", "t-2"], "the tabs stay");
-    assert!(r.has("hc-banner"), "the quiet reconnecting line shows");
-    let banner = r.tree["elements"].as_array().unwrap().iter().find(|e| e["key"] == "hc-banner").unwrap();
+    let banner = r.find("hc-banner").expect("the quiet reconnecting line shows");
     assert!(banner["text"].as_str().unwrap().contains("reconnecting"), "{banner}");
     assert!(r.grid().contains("first-screen"), "the screen stays: {:?}", r.grid());
     assert!(r.attaches("t3").len() >= 2, "it kept trying: {:?}", r.log);
@@ -251,8 +182,8 @@ fn finished_and_removed_events_close_their_tabs() {
             let mut fx = two(d);
             fx["terminals"].as_array_mut().unwrap().push(term("t7", 3000, &d.proj));
             fx["events"] = json!([
-                {"after_ms": 600, "method": "event", "params": {"seq": 1, "type": "finished", "terminal": "t3", "data": {"reason": "exited", "exit_code": 0, "signal": null, "finished_ms": 1}}},
-                {"after_ms": 700, "method": "event", "params": {"seq": 2, "type": "removed", "terminal": "t7", "data": {}}}
+                hc_event(600, 1, "finished", "t3", json!({"reason": "exited", "exit_code": 0, "signal": null, "finished_ms": 1})),
+                hc_event(700, 2, "removed", "t7", json!({}))
             ]);
             fx
         },
@@ -265,14 +196,14 @@ fn finished_and_removed_events_close_their_tabs() {
 
 #[test]
 fn quitting_leaves_the_terminals_running() {
-    let r = run(two, vec![]);
+    let r = two_untouched();
     assert_eq!(r.tabs().len(), 2);
     assert!(r.calls("terminal.kill").is_empty() && r.calls("terminal.rm").is_empty(), "{:?}", r.log);
 }
 
 #[test]
 fn focus_frames_follow_the_selected_tab() {
-    let r = run(two, vec![tap(3.0, "t-2")]);
+    let r = two_second_tab();
     assert_eq!(r.focus("t3"), vec![true, false], "{:?}", r.log);
     assert_eq!(r.focus("t5"), vec![true]);
 }

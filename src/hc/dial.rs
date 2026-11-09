@@ -62,7 +62,7 @@ impl Dialer {
 
     pub fn choose(fake: Option<&OsStr>, hc: Option<&OsStr>, headless: bool, path: Option<&OsStr>, home: Option<&Path>) -> Result<Dialer, HcStatus> {
         if let Some(f) = fake.filter(|f| !f.is_empty()) {
-            return Fixture::load(Path::new(f)).map(|fx| Dialer::Fake(Arc::new(fx))).map_err(|e| HcStatus::Failed(e.to_string()));
+            return Fixture::load(Path::new(f)).map(|fx| Dialer::Fake(Arc::new(if headless { fx.with_manual_clock() } else { fx }))).map_err(|e| HcStatus::Failed(e.to_string()));
         }
         if hc == Some(OsStr::new("off")) {
             return Err(HcStatus::Off);
@@ -78,7 +78,7 @@ impl Dialer {
     pub fn backoff(&self) -> (Duration, Duration) {
         match self {
             Dialer::Command { .. } => (Duration::from_millis(500), Duration::from_secs(5)),
-            Dialer::Fake(_) => (Duration::from_millis(50), Duration::from_millis(200)),
+            Dialer::Fake(_) => (Duration::from_millis(5), Duration::from_millis(20)),
         }
     }
 
@@ -87,7 +87,38 @@ impl Dialer {
     pub fn safety(&self) -> Duration {
         match self {
             Dialer::Command { .. } => Duration::from_secs(10),
-            Dialer::Fake(_) => Duration::from_millis(300),
+            Dialer::Fake(_) => Duration::from_millis(30),
+        }
+    }
+
+    /// Headless runs only: move the fake core's clock to `secs` of script time (so the fixture's
+    /// `after_ms` follows the script) and wait for the work that events started. A real hc has no
+    /// clock to move.
+    pub fn step_fake(&self, secs: f64) {
+        if let Dialer::Fake(fx) = self {
+            fx.set_time((secs * 1000.0) as u64);
+        }
+    }
+
+    /// Headless runs only: tell the fake core that the app took an update from it.
+    pub fn note_fake_activity(&self) {
+        if let Dialer::Fake(fx) = self {
+            fx.bump();
+        }
+    }
+
+    /// Headless runs only: hold the script until the fake core has been quiet for a moment.
+    pub fn settle_fake(&self) {
+        if let Dialer::Fake(fx) = self {
+            fx.settle();
+        }
+    }
+
+    /// How often an attached stream looks for a `restarted` event or a closed tab.
+    pub fn poll(&self) -> Duration {
+        match self {
+            Dialer::Command { .. } => Duration::from_millis(250),
+            Dialer::Fake(_) => Duration::from_millis(5),
         }
     }
 

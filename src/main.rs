@@ -725,9 +725,26 @@ fn hc_fallbacks(s: &mut App) -> bool {
     changed
 }
 
-fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
+/// A headless run drives the fake hc core's clock with the script's and holds each frame until the
+/// core is quiet, so a fixture event and what the app does about it happen in script order.
+fn poll(s: &mut App, t: f64, tx: &mut Tx) -> bool {
+    let fake = if rune::is_headless() { s.hc_dialer.clone() } else { None };
+    if let Some(d) = &fake {
+        d.step_fake(t);
+    }
+    let changed = poll_app(s, tx);
+    if let Some(d) = &fake {
+        d.settle_fake();
+    }
+    changed
+}
+
+fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
     let mut changed = false;
     while let Ok(update) = s.hc_rx.try_recv() {
+        if let Some(d) = &s.hc_dialer {
+            d.note_fake_activity();
+        }
         match update {
             HcUpdate::Status(status) => {
                 if s.hc != status {
