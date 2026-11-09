@@ -16,6 +16,7 @@ mod find;
 mod grid;
 mod hc;
 mod keys;
+mod pty;
 mod session;
 mod settings;
 mod shell;
@@ -36,7 +37,9 @@ use rune::{AppSpec, Color, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, Phase, Tx,
 use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use find::Find;
+use hc::term::{HcSession, Spec as HcSpec};
 use hc::{Dialer, HcStatus, HcUpdate};
+use pty::Pty;
 use session::{Session, Size, now_ms};
 use settings::Appearance;
 use split::Split;
@@ -57,7 +60,7 @@ struct Project {
 
 struct Tab {
     project: usize,
-    session: Session,
+    session: Pty,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,6 +115,9 @@ struct App {
     hc: HcStatus,
     hc_tx: Sender<HcUpdate>,
     hc_rx: Receiver<HcUpdate>,
+    /// How to reach hc for tabs: set when hc is on and installed (or the fake core is chosen);
+    /// `None` means local PTY tabs.
+    hc_dialer: Option<Dialer>,
 }
 
 fn init() -> App {
@@ -138,6 +144,11 @@ fn init() -> App {
         .collect();
     let (diff_tx, diff_rx) = channel();
     let (hc_tx, hc_rx) = channel();
+    // Chosen here, not in `setup`: a scene opens its tabs before `setup` runs.
+    let (hc_dialer, hc) = match Dialer::from_env(rune::is_headless()) {
+        Ok(d) => (Some(d), HcStatus::Connecting),
+        Err(status) => (None, status),
+    };
     App {
         projects,
         tabs: Vec::new(),
@@ -165,9 +176,10 @@ fn init() -> App {
         diff_rx,
         tree: files::empty(),
         changed_only: false,
-        hc: HcStatus::NotInstalled,
+        hc,
         hc_tx,
         hc_rx,
+        hc_dialer,
         find: Find::new(),
     }
 }
@@ -176,10 +188,20 @@ impl App {
     fn open_tab(&mut self, project: usize) {
         let Some(p) = self.projects.get(project) else { return };
         let id = self.next_id;
-        match Session::spawn(id, &p.path, self.pane_size[self.focus_idx()], self.waker.clone()) {
+        let size = self.pane_size[self.focus_idx()];
+        // With hc the tab is a terminal in the core; a thread creates it and a failure falls back
+        // to a local PTY (see `hc_fallbacks`).
+        if let Some(dialer) = self.hc_dialer.clone() {
+            let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone() };
+            self.next_id += 1;
+            self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)) });
+            self.select_tab(id);
+            return;
+        }
+        match Session::spawn(id, &p.path, size, self.waker.clone()) {
             Ok(session) => {
                 self.next_id += 1;
-                self.tabs.push(Tab { project, session });
+                self.tabs.push(Tab { project, session: Pty::Local(session) });
                 self.select_tab(id);
             }
             Err(e) => self.error = Some(format!("couldn't start a shell: {e}")),
@@ -200,7 +222,7 @@ impl App {
     }
 
     fn select_tab(&mut self, id: u64) {
-        let Some(project) = self.tabs.iter().find(|t| t.session.id == id).map(|t| t.project) else { return };
+        let Some(project) = self.tabs.iter().find(|t| t.session.id() == id).map(|t| t.project) else { return };
         // A split belongs to one project: a tab of another project takes the whole panel.
         if self.split.as_ref().is_some_and(|sp| sp.project != project) { self.split = None; }
         // In a split the tab goes to the focused pane, or, when the other pane shows it, focus moves there.
@@ -211,7 +233,7 @@ impl App {
             }
         }
         let size = self.pane_size[self.focus_idx()];
-        if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id == id) { t.session.resize(size); }
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id() == id) { t.session.resize(size); }
         self.selected_project = project;
         self.projects[project].last_tab = Some(id);
         // The find bar belongs to one terminal: another tab starts clean.
@@ -221,24 +243,25 @@ impl App {
 
     fn select_project(&mut self, project: usize) {
         self.selected_project = project;
-        let last = self.projects[project].last_tab.filter(|id| self.tabs.iter().any(|t| t.session.id == *id));
-        match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id)) {
+        let last = self.projects[project].last_tab.filter(|id| self.tabs.iter().any(|t| t.session.id() == *id));
+        match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id())) {
             Some(id) => self.select_tab(id),
             None => { self.split = None; self.active = None; self.find.close(); }
         }
     }
 
     fn close_tab(&mut self, id: u64) {
-        let Some(i) = self.tabs.iter().position(|t| t.session.id == id) else { return };
+        let Some(i) = self.tabs.iter().position(|t| t.session.id() == id) else { return };
         let project = self.tabs[i].project;
-        // Dropping the session closes the PTY; the shell gets SIGHUP.
-        let siblings: Vec<u64> = self.project_tabs(project).map(|t| t.session.id).collect();
+        // Dropping a local session closes the PTY (the shell gets SIGHUP); an hc terminal is killed and removed.
+        self.tabs[i].session.close();
+        let siblings: Vec<u64> = self.project_tabs(project).map(|t| t.session.id()).collect();
         let pos = siblings.iter().position(|s| *s == id).unwrap_or(0);
         // Closing either pane's terminal un-splits; the other one stays.
         let split = self.split.take_if(|sp| sp.panes.contains(&id));
         self.tabs.remove(i);
         if self.active == Some(id) {
-            let rest: Vec<u64> = self.project_tabs(project).map(|t| t.session.id).collect();
+            let rest: Vec<u64> = self.project_tabs(project).map(|t| t.session.id()).collect();
             let other = split.map(|sp| if sp.panes[0] == id { sp.panes[1] } else { sp.panes[0] });
             match other.or_else(|| rest.get(pos.min(rest.len().saturating_sub(1))).copied()) {
                 Some(next) => self.select_tab(next),
@@ -264,7 +287,7 @@ impl App {
     fn cycle_tab(&mut self, step: i32) {
         // In a split the other pane's tab is skipped: it is already on screen.
         let hidden = self.split.as_ref().map(|sp| sp.panes[1 - sp.focus]);
-        let ids: Vec<u64> = self.project_tabs(self.selected_project).map(|t| t.session.id).filter(|i| Some(*i) != hidden).collect();
+        let ids: Vec<u64> = self.project_tabs(self.selected_project).map(|t| t.session.id()).filter(|i| Some(*i) != hidden).collect();
         if ids.is_empty() { return; }
         let cur = self.active.and_then(|a| ids.iter().position(|i| *i == a)).unwrap_or(0) as i32;
         let next = (cur + step).rem_euclid(ids.len() as i32) as usize;
@@ -276,7 +299,7 @@ impl App {
     }
 
     fn active_tab(&self) -> Option<&Tab> {
-        self.active.and_then(|id| self.tabs.iter().find(|t| t.session.id == id))
+        self.active.and_then(|id| self.tabs.iter().find(|t| t.session.id() == id))
     }
 
     fn status(&self, id: u64) -> Status {
@@ -301,7 +324,7 @@ impl App {
         let size = grid_size(w, h);
         self.pane_size[idx] = size;
         if let Some(id) = self.pane_tab(idx)
-            && let Some(t) = self.tabs.iter_mut().find(|t| t.session.id == id)
+            && let Some(t) = self.tabs.iter_mut().find(|t| t.session.id() == id)
         {
             t.session.resize(size);
         }
@@ -403,8 +426,8 @@ impl App {
     fn find_retarget(&mut self) {
         let Some(t) = self.active_tab() else { return };
         let (cur, delta) = {
-            let term = t.session.term.lock().unwrap();
-            let m = self.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term);
+            let term = t.session.term().lock().unwrap();
+            let m = self.find.matches(t.session.id(), t.session.generation().load(Ordering::Acquire), &term);
             if m.is_empty() { (0, 0) } else {
                 let cur = find::first_in_view(&m, term.grid().display_offset());
                 (cur, find::scroll_delta(&term, &m[cur]))
@@ -418,8 +441,8 @@ impl App {
     fn find_step(&mut self, forward: bool) {
         let Some(t) = self.active_tab() else { return };
         let (cur, delta) = {
-            let term = t.session.term.lock().unwrap();
-            let m = self.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term);
+            let term = t.session.term().lock().unwrap();
+            let m = self.find.matches(t.session.id(), t.session.generation().load(Ordering::Acquire), &term);
             let Some(cur) = find::step(self.find.current, m.len(), forward) else { return };
             (cur, find::scroll_delta(&term, &m[cur]))
         };
@@ -453,7 +476,7 @@ impl App {
 
     fn paste(&mut self, text: &str) {
         let Some(t) = self.active_tab() else { return };
-        let bracketed = t.session.term.lock().unwrap().mode().contains(TermMode::BRACKETED_PASTE);
+        let bracketed = t.session.term().lock().unwrap().mode().contains(TermMode::BRACKETED_PASTE);
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if bracketed {
             t.session.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
@@ -478,17 +501,37 @@ fn setup(s: &mut App, waker: Waker) {
     }
 }
 
-/// Pick how to reach hc. A headless run never dials a real hc: with `CONTR_HC_FAKE` it checks the
-/// fake core at once (a scene cannot wait for a thread), otherwise hc shows as not installed.
+/// Start the hc watcher for the dialer `init` chose (none: hc is off or not installed). A headless
+/// run never dials a real hc: with `CONTR_HC_FAKE` it checks the fake core at once (a scene cannot
+/// wait for a thread), otherwise hc shows as not installed.
 fn start_hc(s: &mut App, waker: Waker) {
-    match Dialer::from_env(rune::is_headless()) {
-        Err(status) => s.hc = status,
-        Ok(d) if rune::is_headless() => s.hc = hc::watch::probe(&d),
-        Ok(d) => {
-            s.hc = HcStatus::Connecting;
-            hc::watch::spawn(d, s.hc_tx.clone(), waker);
-        }
+    let Some(d) = s.hc_dialer.clone() else { return };
+    if rune::is_headless() {
+        s.hc = hc::watch::probe(&d);
+    } else {
+        s.hc = HcStatus::Connecting;
+        hc::watch::spawn(d, s.hc_tx.clone(), waker);
     }
+}
+
+/// An hc tab whose terminal could not be created becomes a local PTY (same id, same place).
+fn hc_fallbacks(s: &mut App) -> bool {
+    let size = s.pane_size[0];
+    let mut changed = false;
+    for t in &mut s.tabs {
+        let Pty::Hc(h) = &t.session else { continue };
+        if h.take_failure().is_none() { continue; }
+        let id = h.id;
+        match Session::spawn(id, &s.projects[t.project].path, size, s.waker.clone()) {
+            Ok(local) => t.session = Pty::Local(local),
+            Err(e) => {
+                s.error = Some(format!("couldn't start a shell: {e}"));
+                h.exited.store(true, Ordering::Release);
+            }
+        }
+        changed = true;
+    }
+    changed
 }
 
 fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
@@ -499,22 +542,23 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
             changed = true;
         }
     }
+    changed |= hc_fallbacks(s);
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
-    let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited.load(Ordering::Acquire)).map(|t| t.session.id).collect();
+    let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited().load(Ordering::Acquire)).map(|t| t.session.id()).collect();
     for id in exited {
         s.close_tab(id);
         changed = true;
     }
     for t in &s.tabs {
-        if t.session.dirty.swap(false, Ordering::AcqRel) { changed = true; }
+        if t.session.dirty().swap(false, Ordering::AcqRel) { changed = true; }
     }
     let now = now_ms();
     let statuses: Vec<(u64, Status)> = s
         .tabs
         .iter()
         .map(|t| {
-            let quiet = now.saturating_sub(t.session.last_output.load(Ordering::Relaxed));
-            (t.session.id, if quiet < WORKING_MS { Status::Working } else { Status::Idle })
+            let quiet = now.saturating_sub(t.session.last_output().load(Ordering::Relaxed));
+            (t.session.id(), if quiet < WORKING_MS { Status::Working } else { Status::Idle })
         })
         .collect();
     if statuses.iter().any(|(_, st)| *st == Status::Working) {
@@ -525,7 +569,7 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
     let finished = s.statuses.iter().any(|(id, was)| {
         *was == Status::Working
             && statuses.iter().any(|(i, st)| i == id && *st == Status::Idle)
-            && s.tabs.iter().any(|t| t.session.id == *id && t.project == s.selected_project)
+            && s.tabs.iter().any(|t| t.session.id() == *id && t.project == s.selected_project)
     });
     if statuses != s.statuses {
         s.statuses = statuses;
@@ -619,7 +663,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     // While the bar's input has the focus, typing belongs to it.
     if s.find.open && s.find.edit.focused { return false; }
     let Some(t) = s.active_tab() else { return false };
-    let mode = *t.session.term.lock().unwrap().mode();
+    let mode = *t.session.term().lock().unwrap().mode();
     match keys::bytes(ev, mode) {
         Some(b) => { t.session.write(&b); true }
         None => false,
@@ -631,7 +675,7 @@ fn scroll_active(s: &mut App, lines: i32) {
 }
 
 fn scroll_tab(s: &App, id: u64, lines: i32) {
-    if let Some(t) = s.tabs.iter().find(|t| t.session.id == id) { t.session.scroll(lines); }
+    if let Some(t) = s.tabs.iter().find(|t| t.session.id() == id) { t.session.scroll(lines); }
 }
 
 // ───────────────────────────── view ─────────────────────────────
@@ -686,7 +730,7 @@ fn tab_id(id: u64) -> String { id.to_string() }
 
 fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>) -> El {
     let project = s.selected_project;
-    let titles: Vec<(u64, String)> = s.project_tabs(project).map(|t| (t.session.id, t.session.tab_title())).collect();
+    let titles: Vec<(u64, String)> = s.project_tabs(project).map(|t| (t.session.id(), t.session.tab_title())).collect();
     let items = titles.iter().map(|(id, title)| {
         let status = (s.status(*id) == Status::Working).then_some(TabItemStatus::Busy);
         TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status)
@@ -851,7 +895,7 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
     };
     let total = find_total(s, t);
     let panel = match &s.split {
-        None => shell::terminal_panel(k).child(pane(k, s, 0, t.session.id, false)),
+        None => shell::terminal_panel(k).child(pane(k, s, 0, t.session.id(), false)),
         Some(sp) => shell::terminal_panel(k).child(split_row(k, s, sp)),
     };
     if s.find.open { panel.child(find_bar(k, s, total)) } else { panel }
@@ -860,8 +904,8 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
 /// The number of find matches in the focused terminal.
 fn find_total(s: &App, t: &Tab) -> usize {
     if !s.find.open { return 0; }
-    let term = t.session.term.lock().unwrap();
-    s.find.matches(t.session.id, t.session.generation.load(Ordering::Acquire), &term).len()
+    let term = t.session.term().lock().unwrap();
+    s.find.matches(t.session.id(), t.session.generation().load(Ordering::Acquire), &term).len()
 }
 
 /// Width of the divider's hit area; its hairline sits in the middle.
@@ -911,10 +955,10 @@ fn split_row(k: &Kit, s: &App, sp: &Split) -> El {
 fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
     let c = &k.c;
     let focused = !split || s.focus_idx() == idx;
-    let Some(t) = s.tabs.iter().find(|t| t.session.id == id) else { return col() };
+    let Some(t) = s.tabs.iter().find(|t| t.session.id() == id) else { return col() };
     let lines = {
-        let term = t.session.term.lock().unwrap();
-        let matches = if s.find.open && focused { s.find.matches(id, t.session.generation.load(Ordering::Acquire), &term) } else { Default::default() };
+        let term = t.session.term().lock().unwrap();
+        let matches = if s.find.open && focused { s.find.matches(id, t.session.generation().load(Ordering::Acquire), &term) } else { Default::default() };
         let current = (!matches.is_empty()).then(|| s.find.current.min(matches.len() - 1));
         grid::lines(&term, s.focused && focused, &grid::Ink::from_kit(k), &matches, current)
     };

@@ -39,6 +39,13 @@ pub struct Events {
     title: Arc<Mutex<Option<String>>>,
 }
 
+impl Events {
+    /// Replies for the program go to `writer`; the program's title lands in `title`.
+    pub fn new(writer: Arc<Mutex<Box<dyn Write + Send>>>, title: Arc<Mutex<Option<String>>>) -> Events {
+        Events { writer, title }
+    }
+}
+
 impl EventListener for Events {
     fn send_event(&self, event: Event) {
         match event {
@@ -98,7 +105,7 @@ impl Session {
             Arc::new(Mutex::new(pair.master.take_writer().map_err(std::io::Error::other)?));
 
         let title = Arc::new(Mutex::new(None));
-        let events = Events { writer: writer.clone(), title: title.clone() };
+        let events = Events::new(writer.clone(), title.clone());
         let config = Config { scrolling_history: SCROLLBACK, ..Config::default() };
         let term = Arc::new(Mutex::new(Term::new(config, &size, events)));
 

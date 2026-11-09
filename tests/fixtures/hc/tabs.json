@@ -1,0 +1,5 @@
+{
+  "hello": {"generation": 1, "version": "0.1.19", "core": {"id": "913cbec723543c5e29a10355871310fc", "name": "fake-core"}},
+  "echo": true,
+  "exit_on": "exit\r"
+}

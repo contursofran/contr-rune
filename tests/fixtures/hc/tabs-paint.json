@@ -1,0 +1,5 @@
+{
+  "hello": {"generation": 1, "version": "0.1.19", "core": {"id": "913cbec723543c5e29a10355871310fc", "name": "fake-core"}},
+  "echo": true,
+  "run_screen": "\u001b[2mLast login: Sat Nov  8 10:12:44 on ttys003\u001b[0m\r\n\u001b[1;32mfran\u001b[0m@\u001b[1;34mfake-core\u001b[0m \u001b[36m~/projects/demo\u001b[0m $ ls\r\nCargo.toml  README.md  src  tests\r\n\u001b[1;32mfran\u001b[0m@\u001b[1;34mfake-core\u001b[0m \u001b[36m~/projects/demo\u001b[0m $ "
+}
