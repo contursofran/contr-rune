@@ -13,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::paths;
+
 /// A decision that waits for the owner.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -27,6 +29,12 @@ pub struct Question {
     pub options: Vec<String>,
     /// Index into `options`.
     pub recommended: Option<usize>,
+    /// What each option means; `impacts[i]` is for `options[i]`.
+    pub impacts: Vec<String>,
+    /// Issue or PR numbers, file paths and URLs that help to decide.
+    pub refs: Vec<String>,
+    /// A short excerpt of the text that raised the question.
+    pub source: String,
     pub answer: String,
 }
 
@@ -124,12 +132,7 @@ impl OwnerFile {
 
     /// `CONTR_OWNER_FILE`, else `~/Library/Application Support/contr/owner.json`.
     pub fn from_env() -> Option<OwnerFile> {
-        let path = match std::env::var_os("CONTR_OWNER_FILE") {
-            Some(p) => PathBuf::from(p),
-            None => PathBuf::from(std::env::var_os("HOME")?)
-                .join("Library/Application Support/contr/owner.json"),
-        };
-        Some(OwnerFile::new(path))
+        paths::owner_file().map(OwnerFile::new)
     }
 
     #[cfg(test)]
@@ -218,6 +221,184 @@ fn coordinator_of(item: &Value) -> Option<String> {
         .as_str()
         .filter(|c| !c.is_empty())
         .map(str::to_owned)
+}
+
+/// A question to add; `ask` gives it its id.
+#[derive(Clone, Debug, Default)]
+pub struct NewQuestion {
+    pub project: String,
+    pub coordinator: String,
+    pub from: String,
+    pub title: String,
+    pub question: String,
+    pub options: Vec<String>,
+    pub recommended: Option<usize>,
+    pub impacts: Vec<String>,
+    pub refs: Vec<String>,
+    pub source: String,
+}
+
+/// A to-do to add; `pin` gives it its id.
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)] // used by D9 (the `pin_for_owner` tool)
+pub struct NewTodo {
+    pub project: String,
+    pub coordinator: String,
+    pub from: String,
+    /// `do` (the default when empty) or `know`.
+    pub kind: String,
+    pub text: String,
+}
+
+/// Sets `key` to `value` unless it is empty, as Go's `omitempty`.
+fn put(item: &mut Value, key: &str, value: Value) {
+    let empty = match &value {
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
+    };
+    if !empty {
+        item[key] = value;
+    }
+}
+
+/// Takes the next number of `counter` (`next_question` or `next_todo`; Go starts at 1).
+fn next_id(value: &mut Value, counter: &str, prefix: &str) -> String {
+    let n = value[counter].as_u64().filter(|n| *n >= 1).unwrap_or(1);
+    value[counter] = json!(n + 1);
+    format!("{prefix}{n}")
+}
+
+/// Appends `item` to the array `list` (made when it is missing or null).
+fn push(value: &mut Value, list: &str, item: Value) {
+    if !value[list].is_array() {
+        value[list] = json!([]);
+    }
+    if let Some(items) = value[list].as_array_mut() {
+        items.push(item);
+    }
+}
+
+/// Every id of `ids` must be an open item of `list`, else the error names the first that is not.
+fn all_open(value: &Value, list: &str, ids: &[String], what: &str, open: impl Fn(&Value) -> bool) -> io::Result<()> {
+    let items = value[list].as_array().map_or(&[][..], Vec::as_slice);
+    match ids.iter().find(|id| !items.iter().any(|i| i["id"] == id.as_str() && open(i))) {
+        Some(id) => Err(invalid(format!("no open {what} {id}"))),
+        None => Ok(()),
+    }
+}
+
+fn question_is_open(q: &Value) -> bool {
+    q["answer"].as_str().is_none_or(str::is_empty)
+}
+
+fn todo_is_open(t: &Value) -> bool {
+    is_unset_time(t["done"].as_str())
+}
+
+impl OwnerFile {
+    /// Adds a question and returns its id (`D<n>`).
+    ///
+    /// # Errors
+    /// `InvalidInput` for an empty question or a `recommended` that is no option index.
+    pub fn ask(&self, q: NewQuestion) -> io::Result<String> {
+        if q.question.is_empty() {
+            return Err(invalid("a question needs text".to_owned()));
+        }
+        if let Some(r) = q.recommended.filter(|r| *r >= q.options.len()) {
+            return Err(invalid(format!("recommended {r} is not an option index")));
+        }
+        self.update(|v| {
+            let id = next_id(v, "next_question", "D");
+            let mut item = json!({"id": id, "project": q.project, "question": q.question, "asked": rfc3339_now()});
+            put(&mut item, "coordinator", json!(q.coordinator));
+            put(&mut item, "from", json!(q.from));
+            put(&mut item, "title", json!(q.title));
+            put(&mut item, "options", json!(q.options));
+            if let Some(r) = q.recommended {
+                item["recommended"] = json!(r);
+            }
+            put(&mut item, "impacts", json!(q.impacts));
+            put(&mut item, "refs", json!(q.refs));
+            put(&mut item, "source", json!(q.source));
+            push(v, "questions", item);
+            Ok(id)
+        })
+    }
+
+    /// Adds a to-do and returns its id (`T<n>`).
+    ///
+    /// # Errors
+    /// `InvalidInput` for empty text or a kind that is not `do` or `know`.
+    #[allow(dead_code)] // used by D9 (the `pin_for_owner` tool)
+    pub fn pin(&self, mut t: NewTodo) -> io::Result<String> {
+        if t.text.is_empty() {
+            return Err(invalid("a to-do needs text".to_owned()));
+        }
+        if t.kind.is_empty() {
+            t.kind = "do".to_owned();
+        }
+        if t.kind != "do" && t.kind != "know" {
+            return Err(invalid(format!("kind {:?} is not do or know", t.kind)));
+        }
+        self.update(|v| {
+            let id = next_id(v, "next_todo", "T");
+            let mut item = json!({"id": id, "project": t.project, "kind": t.kind, "text": t.text, "pinned": rfc3339_now()});
+            put(&mut item, "coordinator", json!(t.coordinator));
+            put(&mut item, "from", json!(t.from));
+            push(v, "todos", item);
+            Ok(id)
+        })
+    }
+
+    /// Records `answer` for open questions. `by` is `owner` or `coordinator`. When an id is not an
+    /// open question nothing changes.
+    ///
+    /// # Errors
+    /// `InvalidInput` for no ids, an empty answer, another `by` or an id that is not open.
+    pub fn decide(&self, ids: &[String], answer: &str, by: &str) -> io::Result<()> {
+        if ids.is_empty() {
+            return Err(invalid("no question ids".to_owned()));
+        }
+        if answer.is_empty() {
+            return Err(invalid("an answer needs text".to_owned()));
+        }
+        if by != "owner" && by != "coordinator" {
+            return Err(invalid(format!("by {by:?} is not owner or coordinator")));
+        }
+        self.update(|v| {
+            all_open(v, "questions", ids, "question", question_is_open)?;
+            let now = rfc3339_now();
+            for q in v["questions"].as_array_mut().into_iter().flatten() {
+                if ids.iter().any(|id| q["id"] == id.as_str()) {
+                    q["answer"] = json!(answer);
+                    q["answered_by"] = json!(by);
+                    q["answered"] = json!(now);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Marks open to-dos done. When an id is not an open to-do nothing changes.
+    ///
+    /// # Errors
+    /// `InvalidInput` for no ids or an id that is not open.
+    pub fn unpin(&self, ids: &[String]) -> io::Result<()> {
+        if ids.is_empty() {
+            return Err(invalid("no to-do ids".to_owned()));
+        }
+        self.update(|v| {
+            all_open(v, "todos", ids, "to-do", todo_is_open)?;
+            let now = rfc3339_now();
+            for t in v["todos"].as_array_mut().into_iter().flatten() {
+                if ids.iter().any(|id| t["id"] == id.as_str()) {
+                    t["done"] = json!(now);
+                }
+            }
+            Ok(())
+        })
+    }
 }
 
 impl OwnerSource for OwnerFile {
@@ -474,6 +655,98 @@ mod tests {
             f.read().unwrap().open_questions("p").is_empty(),
             "every answer survived"
         );
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn ask_appends_with_the_next_id_and_keeps_the_rest() {
+        let f = temp_file(Some(FILE));
+        let q = NewQuestion {
+            project: "contr".into(),
+            coordinator: "t9".into(),
+            question: "Which?".into(),
+            options: ids(&["a", "b"]),
+            recommended: Some(0),
+            impacts: ids(&["fast"]),
+            refs: ids(&["#3"]),
+            source: "log".into(),
+            ..NewQuestion::default()
+        };
+        assert_eq!(f.ask(q).unwrap(), "D4");
+        assert_eq!(f.ask(NewQuestion { project: "contr".into(), question: "Plain?".into(), ..NewQuestion::default() }).unwrap(), "D5");
+        let v = raw(&f);
+        assert_eq!((v["next_question"].clone(), v["extra"].clone()), (json!(6), json!([1, 2])));
+        assert_eq!(v["questions"][0]["future_field"], json!({"keep": true}));
+        let d4 = &v["questions"][3];
+        for (key, want) in [("id", json!("D4")), ("coordinator", json!("t9")), ("recommended", json!(0)), ("impacts", json!(["fast"])), ("refs", json!(["#3"])), ("source", json!("log"))] {
+            assert_eq!(d4[key], want, "{key}");
+        }
+        assert!(d4["asked"].as_str().is_some_and(|t| t.ends_with('Z')));
+        let d5 = v["questions"][4].as_object().unwrap();
+        let mut keys: Vec<_> = d5.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["asked", "id", "project", "question"], "empty fields are left out, as Go omitempty");
+        let st = f.read().unwrap();
+        assert_eq!(st.questions[3].impacts, ["fast"]);
+        assert_eq!((st.questions[3].refs.clone(), st.questions[3].source.as_str()), (ids(&["#3"]), "log"));
+        assert_eq!(st.open_questions("contr").len(), 4);
+    }
+
+    #[test]
+    fn a_new_file_starts_at_one_and_pin_counts_todos_apart() {
+        let f = temp_file(None);
+        let ask = |q: &str| f.ask(NewQuestion { question: q.into(), ..NewQuestion::default() }).unwrap();
+        assert_eq!((ask("a").as_str(), ask("b").as_str()), ("D1", "D2"));
+        let todo = |kind: &str| f.pin(NewTodo { project: "p".into(), kind: kind.into(), text: "x".into(), ..NewTodo::default() }).unwrap();
+        assert_eq!((todo("").as_str(), todo("know").as_str()), ("T1", "T2"));
+        let st = f.read().unwrap();
+        assert_eq!((st.todos[0].kind.as_str(), st.todos[1].kind.as_str()), ("do", "know"));
+        assert_eq!(st.open_todos("p").len(), 2);
+        assert_eq!(raw(&f)["todos"][0].get("done"), None, "an open to-do has no done time");
+    }
+
+    #[test]
+    fn adding_errors_change_nothing() {
+        let f = temp_file(Some(FILE));
+        let before = fs::read(f.path()).unwrap();
+        let q = |question: &str, options: &[&str], recommended| NewQuestion { question: question.into(), options: ids(options), recommended, ..NewQuestion::default() };
+        let t = |kind: &str, text: &str| NewTodo { kind: kind.into(), text: text.into(), ..NewTodo::default() };
+        let errors = [
+            f.ask(q("", &[], None)).unwrap_err(),
+            f.ask(q("?", &["a"], Some(1))).unwrap_err(),
+            f.ask(q("?", &[], Some(0))).unwrap_err(),
+            f.pin(t("do", "")).unwrap_err(),
+            f.pin(t("later", "x")).unwrap_err(),
+        ];
+        assert!(errors.iter().all(|e| e.kind() == io::ErrorKind::InvalidInput), "{errors:?}");
+        assert_eq!(fs::read(f.path()).unwrap(), before);
+    }
+
+    #[test]
+    fn decide_and_unpin_take_every_id_or_none() {
+        let f = temp_file(Some(FILE));
+        let before = fs::read(f.path()).unwrap();
+        let by = |r: io::Result<()>| r.unwrap_err().to_string();
+        assert!(by(f.decide(&ids(&["D1", "D3"]), "x", "owner")).contains("no open question D3"));
+        assert!(by(f.decide(&[], "x", "owner")).contains("no question ids"));
+        assert!(by(f.decide(&ids(&["D1"]), "", "owner")).contains("needs text"));
+        assert!(by(f.decide(&ids(&["D1"]), "x", "me")).contains("not owner or coordinator"));
+        assert!(by(f.unpin(&ids(&["T1", "T2"]))).contains("no open to-do T2"));
+        assert!(by(f.unpin(&[])).contains("no to-do ids"));
+        assert_eq!(fs::read(f.path()).unwrap(), before, "a failed call writes nothing");
+
+        f.decide(&ids(&["D1", "D2"]), "go", "coordinator").unwrap();
+        let v = raw(&f);
+        for i in 0..2 {
+            assert_eq!((v["questions"][i]["answer"].as_str(), v["questions"][i]["answered_by"].as_str()), (Some("go"), Some("coordinator")));
+        }
+        assert_eq!(v["questions"][0]["future_field"], json!({"keep": true}));
+        assert!(f.read().unwrap().open_questions("contr").is_empty());
+        f.unpin(&ids(&["T1"])).unwrap();
+        assert!(f.read().unwrap().open_todos("contr").is_empty());
     }
 
     #[test]
