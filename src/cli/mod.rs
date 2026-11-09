@@ -2,6 +2,7 @@
 //! opens a window. Exit codes: 0 ok, 1 error, 2 usage (PARITY-PLAN K4).
 
 mod agents;
+mod owner;
 
 use std::ffi::OsString;
 
@@ -19,7 +20,7 @@ commands:
 With no command, contr-rune opens the app.";
 
 /// The commands that are still stubs; each part replaces its entry.
-const STUBS: [&str; 4] = ["owner", "hook", "mcp", "statusline"];
+const STUBS: [&str; 3] = ["hook", "mcp", "statusline"];
 
 /// Runs a CLI call and returns its exit code, or `None` when the arguments are not a CLI call
 /// (no argument, or the app's own `--` flags): then the app starts.
@@ -37,6 +38,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Option<i32> {
 fn dispatch(args: &[String], out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
     match args[0].as_str() {
         "agents" => agents::run(&args[1..], &agents::Env::real(), out, err),
+        "owner" => owner::run(&args[1..], &owner::Env::real(), out, err),
         "help" => {
             let _ = writeln!(out, "{USAGE}");
             0
