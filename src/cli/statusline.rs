@@ -61,11 +61,11 @@ pub fn run(args: &[String], env: &Env, stdin: impl Read, out: &mut impl Write, e
         return 0;
     }
     save(&input, env, err);
-    if let Some((program, rest)) = then.split_first() {
-        if let Err(e) = out.write_all(&run_capped(program, rest, input, env.timeout)) {
-            let _ = writeln!(err, "contr-rune statusline: {e}");
-            return 1;
-        }
+    if let Some((program, rest)) = then.split_first()
+        && let Err(e) = out.write_all(&run_capped(program, rest, input, env.timeout))
+    {
+        let _ = writeln!(err, "contr-rune statusline: {e}");
+        return 1;
     }
     0
 }
@@ -76,15 +76,15 @@ fn save(input: &[u8], env: &Env, err: &mut impl Write) {
         let _ = writeln!(err, "contr-rune statusline: no state dir; usage not saved");
         return;
     };
-    if let Some((version, windows)) = claude_windows(&json) {
-        if let Err(e) = write_claude(state, version.as_deref(), &windows, env.now) {
-            let _ = writeln!(err, "contr-rune statusline: cannot write the Claude usage file: {e}");
-        }
+    if let Some((version, windows)) = claude_windows(&json)
+        && let Err(e) = write_claude(state, version.as_deref(), &windows, env.now)
+    {
+        let _ = writeln!(err, "contr-rune statusline: cannot write the Claude usage file: {e}");
     }
-    if let (Some(id), Some(context)) = (&env.terminal, context(&json)) {
-        if let Err(e) = write_context(state, id, &context, env.now) {
-            let _ = writeln!(err, "contr-rune statusline: cannot write the context file: {e}");
-        }
+    if let (Some(id), Some(context)) = (&env.terminal, context(&json))
+        && let Err(e) = write_context(state, id, &context, env.now)
+    {
+        let _ = writeln!(err, "contr-rune statusline: cannot write the context file: {e}");
     }
 }
 
@@ -216,8 +216,7 @@ fn run_capped(program: &str, args: &[String], input: Vec<u8>, timeout: Duration)
     }
     // A process that escaped the kill may hold the pipe open, so the wait for the rest is short.
     let _ = closed.recv_timeout(DRAIN);
-    let out = collected.lock().unwrap().clone();
-    out
+    collected.lock().unwrap().clone()
 }
 
 #[cfg(test)]
