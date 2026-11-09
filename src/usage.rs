@@ -246,7 +246,6 @@ pub struct Context {
     pub effort: String,
 }
 
-#[allow(dead_code)]
 impl Context {
     /// Whole percent of the window used, 0 to 100.
     pub fn percent(&self) -> u64 {
@@ -260,7 +259,6 @@ impl Context {
 }
 
 /// `90k`; `1M` when `n` is a whole number of millions.
-#[allow(dead_code)]
 fn short_tokens(n: u64) -> String {
     if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
         format!("{}M", n / 1_000_000)
@@ -284,9 +282,47 @@ pub fn parse_context(text: &str) -> Option<Context> {
 }
 
 /// The context saved for hc terminal `id`.
-#[allow(dead_code)]
 pub fn read_context(id: &str) -> Option<Context> {
     parse_context(&std::fs::read_to_string(paths::context_file(id)?).ok()?)
+}
+
+/// How often the selected agent's context file is read again.
+const CONTEXT_EVERY: Duration = Duration::from_secs(5);
+
+/// The selected agent's context, read when the selection changes and then every few seconds while
+/// focused (the view only reads this cache).
+#[derive(Default)]
+pub struct ContextCache {
+    id: Option<String>,
+    last: Option<Instant>,
+    pub context: Option<Context>,
+}
+
+impl ContextCache {
+    /// Refresh for the selected agent `id`. Returns whether the context changed.
+    pub fn poll(&mut self, id: Option<&str>, focused: bool, tx: &mut Tx) -> bool {
+        let Some(id) = id else {
+            self.last = None;
+            return self.id.take().is_some() && self.context.take().is_some();
+        };
+        let moved = self.id.as_deref() != Some(id);
+        if moved {
+            self.id = Some(id.to_owned());
+            self.last = None;
+        }
+        if (moved || focused) && self.last.is_none_or(|t| t.elapsed() >= CONTEXT_EVERY) {
+            self.last = Some(Instant::now());
+            let now = read_context(id);
+            if now != self.context {
+                self.context = now;
+                return true;
+            }
+        }
+        if focused {
+            tx.wake_after(CONTEXT_EVERY);
+        }
+        false
+    }
 }
 
 #[cfg(test)]
