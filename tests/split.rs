@@ -11,8 +11,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Value, json};
 
 /// Run `scene` with `events` and return the tree at t = 10 (the shells are up by t = 4).
-fn run(scene: &str, mut events: Vec<Value>) -> Value {
-    events.push(json!({ "t": 10.0, "type": "mark", "name": "end" }));
+fn run(scene: &str, events: Vec<Value>) -> Value { run_until(scene, events, 10.0) }
+
+/// Like `run`, with the tree taken at t = `end`. Script time is not wall time: a frame costs about a
+/// millisecond, so a run lasts about `end / 16` seconds, and the real shells (their start-up and the
+/// scene's typed text) only get that long. A later `end` gives them more time on a loaded machine.
+fn run_until(scene: &str, mut events: Vec<Value>, end: f64) -> Value {
+    events.push(json!({ "t": end, "type": "mark", "name": "end" }));
     static RUNS: AtomicUsize = AtomicUsize::new(0);
     let id = format!("{}-{}", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed));
     let dir = std::env::temp_dir();
@@ -236,18 +241,20 @@ fn dragging_the_divider_resizes_and_keeps_a_fifth() {
 
 #[test]
 fn closing_a_terminal_unsplits() {
+    // Terminal 1's shell must run the scene's text ("all done") before the end, even on a loaded machine.
+    const END: f64 = 40.0;
     // ⌘W closes the focused (right) terminal.
-    let t = run(SCENE, vec![tap(5.0, "split"), chord(6.0, "w")]);
+    let t = run_until(SCENE, vec![tap(5.0, "split"), chord(6.0, "w")], END);
     assert!(!split_open(&t));
     assert!(find(&t, "t-2").is_none() && find(&t, "t-1").is_some());
     assert_eq!(selected_tab(&t), "1");
     // The shell exiting in the right pane does the same.
-    let t = run(SCENE, vec![tap(5.0, "split"), typed(6.0, "exit"), enter(6.8)]);
+    let t = run_until(SCENE, vec![tap(5.0, "split"), typed(6.0, "exit"), enter(6.8)], END);
     assert!(!split_open(&t));
     assert_eq!(selected_tab(&t), "1");
     assert!(left(&t).contains("all done"));
     // A shell exiting in the focused left pane leaves the right terminal as the whole panel.
-    let t = run(SCENE, vec![tap(5.0, "split"), tap(6.0, "grid"), typed(6.5, "exit"), enter(7.3)]);
+    let t = run_until(SCENE, vec![tap(5.0, "split"), tap(6.0, "grid"), typed(6.5, "exit"), enter(7.3)], END);
     assert!(!split_open(&t));
     assert_eq!(selected_tab(&t), "2");
 }
