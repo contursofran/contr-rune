@@ -164,6 +164,14 @@ fn closing_an_agent_tab_only_detaches() {
 }
 
 #[test]
+fn an_agent_tab_has_no_terminal_row_in_the_sidebar() {
+    let r = run(vec![tap(3.0, "agent/t3")]);
+    let rows: Vec<&str> = r.elements().iter().filter_map(|e| e["key"].as_str()).filter(|k| k.starts_with("term-")).collect();
+    assert_eq!(rows, vec!["term-1"], "only the plain tab has a terminal row");
+    assert!(r.agent_selected("t3"));
+}
+
+#[test]
 fn closing_a_plain_tab_still_kills_and_removes_it() {
     let r = run(vec![chord(3.0, "w")]);
     assert!(r.tabs().is_empty());

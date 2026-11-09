@@ -215,7 +215,7 @@ fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
         .subtitle(model::meta(line))
         .subtitle_style(theme::META)
         .title_style(theme::BODY)
-        .detail(fmt_age(a.age_ms / 1000))
+        .detail(a.age_ms.map(|ms| fmt_age(ms / 1000)).unwrap_or_default())
         .height(if line.depth <= 1 { ORCHESTRATOR_ROW_HEIGHT } else { WORKER_ROW_HEIGHT })
         .depth(line.depth)
         .selected(s.selected_agent.as_deref() == Some(a.address.as_str()))
@@ -273,7 +273,8 @@ pub fn view(k: &Kit, s: &App) -> El {
         for line in model::lines(&s.agents, i) {
             list = list.child(agent_row(k, s, &line));
         }
-        for t in s.project_tabs(i) {
+        // An agent's tab is shown by its agent row only.
+        for t in s.project_tabs(i).filter(|t| t.agent.is_none()) {
             list = list.child(terminal_row(k, s, t));
         }
     }
