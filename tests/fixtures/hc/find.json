@@ -1,0 +1,6 @@
+{
+  "hello": {"generation": 1, "version": "0.1.19", "core": {"id": "913cbec723543c5e29a10355871310fc", "name": "fake-core"}},
+  "echo": true,
+  "exit_on": "exit\r",
+  "run_screen": "error: unable to resolve import\r\nERROR: expected semicolon\r\nwarning: unused variable\r\nError: type mismatch\r\nerror: file not found\r\nall done\r\n$ "
+}
