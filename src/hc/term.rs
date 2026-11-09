@@ -14,7 +14,7 @@
 //!   attaches again with `resumed: true`, waiting 0.5 s, doubled to 5 s. The emulator keeps its
 //!   scrollback; the visible screen is cleared before the core's first paint.
 //! - Attach errors `not_found`, `finished`, `needs_framed`: over, the tab closes. `unavailable`:
-//!   no retry until the `restarted` event (`HcSession::event`), which also re-attaches at once from
+//!   wait for the `restarted` event (with a slow safety retry, 10 s, in case it was missed) (`HcSession::event`), which also re-attaches at once from
 //!   any state. The `finished` and `removed` events close the tab.
 //!
 //! A failure before the terminal exists (no core, `spawn_failed`, ...) is reported by
@@ -501,11 +501,10 @@ impl Feed {
                 }
                 Err(AttachErr::Unavailable) => {
                     self.set_detached(true);
-                    // No retry until `restarted`.
-                    if !self.park(seen) {
-                        return None;
+                    // Wait for `restarted`; a slow timer tries again if the event was missed.
+                    if self.park(seen)? {
+                        resumed = false;
                     }
-                    resumed = false;
                     backoff = first;
                     wait = false;
                 }
@@ -548,17 +547,23 @@ impl Feed {
         }
     }
 
-    /// Block until a `restarted` event (true) or the end of the tab (false).
-    fn park(&self, seen: u64) -> bool {
+    /// Wait for a `restarted` event (`Some(true)`), or the slow safety timer in case the event was
+    /// missed (`Some(false)`); `None` when the tab ended.
+    fn park(&self, seen: u64) -> Option<bool> {
+        let deadline = std::time::Instant::now() + self.shared.spec.dialer.safety();
         let mut st = self.shared.state.lock().unwrap();
         loop {
             if st.closing || self.exited.load(Ordering::Acquire) {
-                return false;
+                return None;
             }
             if st.epoch != seen {
-                return true;
+                return Some(true);
             }
-            st = self.shared.cv.wait(st).unwrap();
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Some(false);
+            }
+            st = self.shared.cv.wait_timeout(st, left).unwrap().0;
         }
     }
 
@@ -757,6 +762,18 @@ mod tests {
         s.event(TermEvent::Restarted);
         std::thread::sleep(Duration::from_millis(200));
         assert!(s.detached() && !s.exited.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn unavailable_without_a_restarted_event_is_retried_by_the_safety_timer() {
+        let (s, fx) = start(json!({"terminals": [live("t3")], "screens": {"t3": "back\r\n"}}), Some("t3"));
+        until("attached", || s.address().is_some() && !s.detached());
+        std::thread::sleep(Duration::from_millis(200));
+        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 500, "refuse_attach_kind": "unavailable"}));
+        until("detached", || s.detached());
+        // No `restarted` is ever sent: the safety retry finds the core ready again.
+        until("attached again", || !s.detached());
+        assert!(!s.exited.load(Ordering::Acquire));
     }
 
     #[test]

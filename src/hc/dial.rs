@@ -82,6 +82,15 @@ impl Dialer {
         }
     }
 
+    /// How long a tab told `unavailable` waits for `restarted` before it tries again anyway (the
+    /// event may have been missed).
+    pub fn safety(&self) -> Duration {
+        match self {
+            Dialer::Command { .. } => Duration::from_secs(10),
+            Dialer::Fake(_) => Duration::from_millis(300),
+        }
+    }
+
     /// Open one new line to the core.
     pub fn dial(&self) -> io::Result<Link> {
         match self {

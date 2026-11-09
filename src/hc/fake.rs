@@ -120,6 +120,8 @@ struct Core {
     conns: Vec<Weak<Ctx>>,
     /// `terminal.attach` fails (kind `busy`) until this instant.
     refuse_attach_until: Option<std::time::Instant>,
+    /// The error kind of a refused attach: `busy`, or `unavailable` with `refuse_attach_kind`.
+    refuse_attach_kind: &'static str,
 }
 
 impl fmt::Debug for Fixture {
@@ -139,7 +141,7 @@ impl Fixture {
         let terminals: Vec<Value> = raw["terminals"].as_array().cloned().unwrap_or_default();
         let next = terminals.iter().filter_map(|t| t["address"].as_str()?.strip_prefix('t')?.parse::<u64>().ok()).max().map_or(1, |n| n + 1);
         let screens = raw["screens"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_default();
-        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0, conns: Vec::new(), refuse_attach_until: None }), raw }
+        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0, conns: Vec::new(), refuse_attach_until: None, refuse_attach_kind: "busy" }), raw }
     }
 
     pub(crate) fn terminals(&self) -> Vec<Value> {
@@ -227,6 +229,7 @@ impl Fixture {
     /// A control event from the fixture (see the module docs).
     pub(crate) fn control(&self, params: &Value) {
         if let Some(ms) = params["refuse_attach_ms"].as_u64() {
+            self.core.lock().unwrap().refuse_attach_kind = if params["refuse_attach_kind"] == "unavailable" { "unavailable" } else { "busy" };
             self.core.lock().unwrap().refuse_attach_until = Some(std::time::Instant::now() + Duration::from_millis(ms));
         }
         if params["drop"] == "framed" {
@@ -550,7 +553,8 @@ impl Ctx {
         }
         let address = Self::address(params);
         if self.fx.core.lock().unwrap().refuse_attach_until.is_some_and(|t| std::time::Instant::now() < t) {
-            return Err(("busy", "the fake core refuses attaches for now".into()));
+            let kind = self.fx.core.lock().unwrap().refuse_attach_kind;
+            return Err((kind, "the fake core refuses attaches for now".into()));
         }
         let mut rec = self.fx.get(address)?;
         if rec["state"] == "finished" {
