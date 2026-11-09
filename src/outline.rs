@@ -6,13 +6,17 @@
 //! "New" is a tick that came while the owner was away: a terminal starts with what is pinned as old,
 //! and while it is shown in a focused window everything counts as read.
 //!
+//! Keys: with the terminal in front, ⌥⇥ moves focus to the first tick (plain ⇥ stays the shell's);
+//! then ↑ ↓ move between ticks, ⏎ or space opens one and Esc gives focus back to the terminal.
+//! Rune does the focus work (a `list` focus group of `focusable` ticks); `key` only enters and leaves.
+//!
 //! Elements: `outline` (label "Orchestrator messages, N new"), `outline/count`, `outline/tick/<ID>`
 //! (a 20x10 hit area; the label is the headline, plus ", new"), `outline/card`, `outline/card/title`,
 //! `outline/card/detail`, `outline/card/time`.
 
 use std::collections::{HashMap, HashSet};
 
-use rune::{Color, El, col, el, row, text};
+use rune::{Color, El, Key, KeyEvent, Tx, col, el, row, text};
 use rune_kit::{Kit, Placement, popover};
 
 use crate::App;
@@ -73,6 +77,8 @@ pub struct State {
     seen: HashMap<u64, HashSet<String>>,
     hover: Option<String>,
     open: Option<String>,
+    /// The plain ⇥ that ⌥⇥ sent on is on its way to Rune's focus order, not to the shell.
+    entering: bool,
 }
 
 impl State {
@@ -135,13 +141,39 @@ impl App {
     }
 }
 
+/// Keys of the outline, from the window's `on_key`: `Some(used)` when the outline decides the key,
+/// `None` to go on. ⌥⇥ sends a plain ⇥ to Rune's focus order (the ticks come first in it) and that
+/// ⇥ is let by, not written to the shell; Esc with a tick focused blurs it, so the next key reaches
+/// the shell.
+pub fn key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> Option<bool> {
+    let plain = ev.mods == Default::default();
+    match ev.key {
+        Key::Escape if plain && tx.focused().is_some_and(|f| f.starts_with("outline/tick/")) => {
+            tx.blur();
+            Some(true)
+        }
+        Key::Tab if plain && s.outline.entering => {
+            s.outline.entering = false;
+            Some(false)
+        }
+        Key::Tab if ev.mods.alt && !(ev.mods.ctrl || ev.mods.cmd || ev.mods.shift) && current(s).is_some() => {
+            // With a control focused Rune's focus order takes the sent ⇥ itself; with none it
+            // reaches `on_key` first, which must let it by.
+            s.outline.entering = tx.focused().is_none();
+            tx.send_key(KeyEvent { key: Key::Tab, mods: Default::default() });
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
 /// The column of ticks, pinned to the right edge and centred on the height; `None` when the shown
 /// terminal is not an orchestrator's or has no ticks.
 pub fn ticks(k: &Kit, s: &App) -> Option<El> {
     let (tab, msgs) = current(s)?;
     let c = &k.c;
     let new = msgs.iter().filter(|m| s.outline.is_new(tab, &m.id)).count();
-    let mut column = col().key("outline").role("group").label(format!("Orchestrator messages, {new} new")).items_end().gap(1.0).py(6.0);
+    let mut column = col().key("outline").role("list").focus_group().label(format!("Orchestrator messages, {new} new")).items_end().gap(1.0).py(6.0);
     if new > 0 {
         column = column.child(text(new.to_string()).key("outline/count").font(META).color(c.text_base).mb(2.0));
     }
@@ -157,6 +189,9 @@ pub fn ticks(k: &Kit, s: &App) -> Option<El> {
                 .key(format!("outline/tick/{}", m.id))
                 .role("button")
                 .label(label)
+                .focusable(true)
+                .tab_index(1)
+                .focus_ring(2.0, 0.0, c.border_focus)
                 .w(HIT_W)
                 .h(HIT_H)
                 .justify_center()

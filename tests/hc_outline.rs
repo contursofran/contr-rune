@@ -74,3 +74,44 @@ fn pressing_a_tick_keeps_its_card_until_pressed_again() {
     let r = run(vec![tap(0.5, "agent/t3"), tap(1.0, "outline/tick/T1"), tap(1.3, "outline/tick/T1"), hover(1.6, "grid")]);
     assert!(!r.has("outline/card"));
 }
+
+/// ⌥⇥ with the terminal in front.
+fn enter(t: f64) -> Value {
+    json!({ "t": t, "type": "key", "name": "Tab", "alt": true })
+}
+
+#[test]
+fn option_tab_reaches_the_first_tick_and_plain_tab_stays_the_shells() {
+    let r = run(vec![tap(0.5, "agent/t3"), tap(0.7, "grid"), enter(1.0)]);
+    assert_eq!(r.find("outline/tick/T1").unwrap()["focused"], true, "{:?}", r.find("outline/tick/T1"));
+    assert_eq!(r.find("outline/tick/T1").unwrap()["focusVisible"], true, "the kit's ring shows");
+    assert_eq!(r.find("outline/tick/T2").unwrap()["focused"], false);
+    assert_eq!(r.data("t3"), "", "the shell got nothing");
+    let r = run(vec![tap(0.5, "agent/t3"), tap(0.7, "grid"), key(1.0, "Tab")]);
+    assert_eq!(r.data("t3"), "\t");
+    assert_eq!(r.find("outline/tick/T1").unwrap()["focused"], false);
+}
+
+#[test]
+fn arrows_move_between_ticks_and_enter_opens_one() {
+    let r = run(vec![tap(0.5, "agent/t3"), tap(0.7, "grid"), enter(1.0), key(1.2, "Down")]);
+    assert_eq!(r.find("outline/tick/T2").unwrap()["focused"], true);
+    assert_eq!(r.data("t3"), "", "arrows are the outline's, not the shell's");
+    let r = run(vec![tap(0.5, "agent/t3"), tap(0.7, "grid"), enter(1.0), key(1.2, "Down"), key(1.4, "Enter")]);
+    assert_eq!(r.find("outline/card/title").unwrap()["text"], "CI failed on #329");
+    assert_eq!(r.data("t3"), "");
+}
+
+#[test]
+fn escape_gives_focus_back_and_the_next_key_reaches_the_shell() {
+    let r = run(vec![tap(0.5, "agent/t3"), tap(0.7, "grid"), enter(1.0), key(1.2, "Escape"), key(1.4, "Down"), typed(1.6, "ls")]);
+    assert_eq!(r.find("outline/tick/T1").unwrap()["focused"], false);
+    assert_eq!(r.data("t3"), "\x1b[Bls", "Esc was the outline's; the arrow and text reached the shell");
+}
+
+#[test]
+fn a_tick_is_a_button_labelled_with_its_headline() {
+    let r = run(vec![tap(0.5, "agent/t3")]);
+    let t2 = r.find("outline/tick/T2").unwrap();
+    assert_eq!((t2["role"].as_str(), t2["label"].as_str()), (Some("button"), Some("CI failed on #329")));
+}
