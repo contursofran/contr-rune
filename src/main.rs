@@ -16,6 +16,7 @@ mod dialog;
 mod diff;
 mod files;
 mod find;
+mod flow_section;
 mod github;
 mod grid;
 mod hc;
