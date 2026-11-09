@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::Command;
 
 use rune::{Icon, El, col, row, spacer, text};
-use rune_kit::{ControlSize, FileNode, FileTree, IconButton, IconButtonVariant, Kit, State, TreeItem, TreeModel, TreeStyle, Tree};
+use rune_kit::{ControlSize, FileNode, Progress, FileTree, IconButton, IconButtonVariant, Kit, State, TreeItem, TreeModel, TreeStyle, Tree};
 
-use crate::{App, label, shell};
+use crate::{App, label, shell, usage};
 use crate::theme::{FILE_ROW_HEIGHT, ROW_SMALL};
 use crate::diff::{self, ChangeKind, Changed, DiffSummary};
 
@@ -279,8 +279,8 @@ static FILTER: Icon = Icon {
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></g>"#,
 };
 
-/// The files card: the project name and the changed-only toggle, then the tree. (The usage meters
-/// wait for agent data, part K7.)
+/// The files card: the project name and the changed-only toggle, then the tree, then the selected
+/// agent's context meter (H13) when it has a context file.
 pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
     let c = &k.c;
     let name = s.projects.get(s.selected_project).map(|p| p.name.clone()).unwrap_or_default();
@@ -309,7 +309,31 @@ pub(crate) fn files_panel(k: &Kit, s: &App) -> El {
     } else {
         file_tree(k, s)
     };
-    shell::files_panel(k).padding(10.0).child(head).child(body)
+    let panel = shell::files_panel(k).padding(10.0).child(head).child(body);
+    match s.context.context.as_ref() {
+        Some(ctx) => panel.child(context_meter(k, ctx)),
+        None => panel,
+    }
+}
+
+/// "Context" with the value ("90k of 200k  45%") at the right, and a bar under it.
+fn context_meter(k: &Kit, ctx: &usage::Context) -> El {
+    let c = &k.c;
+    col()
+        .key("meter/context")
+        .w_full()
+        .gap(6.0)
+        .pt(8.0)
+        .px(10.0)
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .child(text("Context").key("label").font(k.ty.text_xsmall).color(c.text_faint))
+                .child(spacer())
+                .child(text(ctx.label()).key("value").font(k.ty.mono).color(c.text_muted)),
+        )
+        .child(Progress::new(Some(ctx.percent() as f32 / 100.0)).build(k).key("bar"))
 }
 
 fn file_tree(k: &Kit, s: &App) -> El {
