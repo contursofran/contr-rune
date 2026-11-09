@@ -20,6 +20,7 @@ mod flow_section;
 mod github;
 mod grid;
 mod hc;
+mod host;
 mod keys;
 mod notch;
 mod orchestrator;
@@ -176,6 +177,7 @@ struct App {
     card: notch::Card,
     /// Claude and Codex plan meters in the sidebar foot (H11).
     plans: usage::Plans,
+    host: host::Host,
     context: usage::ContextCache,
     /// The terminal text selection (T1).
     select: select::Select,
@@ -276,6 +278,7 @@ fn init() -> App {
         owner_stamp: None,
         card: notch::Card::default(),
         plans: usage::Plans::new(),
+        host: host::Host::new(),
         context: usage::ContextCache::default(),
         select: select::Select::default(),
         update: update::Updater::new(),
@@ -753,6 +756,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.waker = Some(waker.clone());
     if rune::is_headless() {
         s.plans.read_now();
+        s.host.fix_from_env();
     }
     start_hc(s, waker.clone());
     // A headless run cannot wait for the watcher: take the first listing now.
@@ -861,6 +865,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
     }
     changed |= s.gh.poll(&s.agents, s.focused, s.waker.as_ref());
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
+    changed |= s.host.poll(s.focused, tx);
     changed |= s.context.poll(s.selected_agent.as_deref(), s.focused, tx);
     changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
