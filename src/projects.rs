@@ -1,5 +1,5 @@
 //! The saved projects (C5, K2): the open folders in order and the selected one, kept in a small
-//! JSON file of our own (`{"version":1,"open":[path…],"selected":path}`; Go contr's file is not used).
+//! JSON file of our own (`{"version":1,"open":[path…],"selected":path,"agent":address}`; Go contr's file is not used).
 //! A missing or broken file means no saved projects. `CONTR_PROJECTS_FILE` points the file
 //! elsewhere (tests); a headless run without it never reads or writes the owner's real file.
 
@@ -14,6 +14,9 @@ pub struct Saved {
     /// The selected project; `None` for the first.
     #[serde(default)]
     pub selected: Option<PathBuf>,
+    /// The selected agent's address (Go D173); `None` for no agent. Old files have no such field.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// Where the file lives: `CONTR_PROJECTS_FILE`, else `~/Library/Application Support/contr-rune/projects.json`
@@ -42,8 +45,8 @@ fn parse(text: &str) -> Option<Saved> {
     serde_json::from_str(text).ok()
 }
 
-fn render(open: &[&Path], selected: Option<&Path>) -> String {
-    let v = serde_json::json!({ "version": 1, "open": open, "selected": selected });
+fn render(open: &[&Path], selected: Option<&Path>, agent: Option<&str>) -> String {
+    let v = serde_json::json!({ "version": 1, "open": open, "selected": selected, "agent": agent });
     serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"
 }
 
@@ -55,14 +58,14 @@ pub fn load() -> Option<Saved> {
     (!saved.open.is_empty()).then_some(saved)
 }
 
-/// Write the open folders and the selected one (a temp file, then a rename), creating the folder.
-pub fn save(open: &[&Path], selected: Option<&Path>) -> std::io::Result<()> {
+/// Write the open folders, the selected one and the selected agent (a temp file, then a rename), creating the folder.
+pub fn save(open: &[&Path], selected: Option<&Path>, agent: Option<&str>) -> std::io::Result<()> {
     let Some(p) = path() else { return Ok(()) };
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, render(open, selected))?;
+    std::fs::write(&tmp, render(open, selected, agent))?;
     std::fs::rename(tmp, p)
 }
 
@@ -73,9 +76,12 @@ mod tests {
     #[test]
     fn render_and_parse_round_trip() {
         let (a, b) = (Path::new("/a"), Path::new("/b c"));
-        let s = parse(&render(&[a, b], Some(b))).unwrap();
-        assert_eq!(s, Saved { open: vec![a.into(), b.into()], selected: Some(b.into()) });
-        assert_eq!(parse(&render(&[], None)).unwrap().selected, None);
+        let s = parse(&render(&[a, b], Some(b), Some("t17"))).unwrap();
+        assert_eq!(s, Saved { open: vec![a.into(), b.into()], selected: Some(b.into()), agent: Some("t17".into()) });
+        assert_eq!(parse(&render(&[], None, None)).unwrap().selected, None);
+        // A file from before the agent was saved still loads.
+        let old = parse(r#"{"version":1,"open":["/a"],"selected":"/a"}"#).unwrap();
+        assert_eq!((old.selected, old.agent), (Some(a.into()), None));
     }
 
     #[test]
@@ -98,10 +104,10 @@ mod tests {
         // SAFETY: this is the only test that touches the process environment.
         unsafe { std::env::set_var("CONTR_PROJECTS_FILE", &file) };
         assert_eq!(load(), None, "a missing file has no projects");
-        save(&[&a, &b], Some(&b)).unwrap();
+        save(&[&a, &b], Some(&b), Some("t3")).unwrap();
         assert!(!file.with_extension("json.tmp").exists(), "the temp file is renamed away");
         let s = load().unwrap();
-        assert_eq!((s.open, s.selected), (vec![a.clone(), b.clone()], Some(b.clone())));
+        assert_eq!((s.open, s.selected, s.agent), (vec![a.clone(), b.clone()], Some(b.clone()), Some("t3".to_owned())));
         std::fs::remove_dir_all(&b).unwrap();
         assert_eq!(load().unwrap().open, vec![a.clone()], "a folder that is gone is dropped");
         std::fs::write(&file, "{ broken").unwrap();
