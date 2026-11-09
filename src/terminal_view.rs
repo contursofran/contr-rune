@@ -105,11 +105,13 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
     let c = &k.c;
     let focused = !split || s.focus_idx() == idx;
     let Some(t) = s.tabs.iter().find(|t| t.session.id() == id) else { return col() };
-    let (lines, selected) = {
+    let (lines, selected, link) = {
         let term = t.session.term().lock().unwrap();
         let matches = if s.find.open && focused { s.find.matches(id, t.session.generation().load(Ordering::Acquire), &term) } else { Default::default() };
         let current = (!matches.is_empty()).then(|| s.find.current.min(matches.len() - 1));
-        (grid::lines(&term, s.focused && focused, &grid::Ink::from_kit(k), &matches, current), select::text(&term))
+        let link = select::hovered(s, idx, &term);
+        let lines = grid::lines(&term, s.focused && focused, &grid::Ink::from_kit(k), &matches, current, link.as_ref().map(|l| (l.from, l.to)));
+        (lines, select::text(&term), link)
     };
     let (grid_key, body_key, row_prefix) = if idx == 0 {
         ("grid".to_owned(), "terminal/body".to_owned(), String::new())
@@ -135,12 +137,20 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
             }
             // ⌘-click on a link opens it and selects nothing (`d.data` marks the gesture for its later phases).
             if d.phase == Phase::Down && tx.mods().cmd {
-                if let Some(url) = select::link_at(s, idx, d.x, d.y) {
+                if let Some(link) = select::link_at(s, idx, d.x, d.y) {
                     d.data = 1.0;
-                    if tx.open_url(&url).is_ok() { s.select.opened = Some(url); }
+                    if tx.open_url(&link.url).is_ok() { s.select.opened = Some(link.url); }
                 }
             }
             if d.data == 0.0 { select::drag(s, idx, d, tx); }
+        })
+        // ⌘ over a link underlines it and shows the pointer cursor (T2b).
+        .on_pointer_move_local(move |s: &mut App, p, tx: &mut Tx| {
+            s.select.cmd = tx.mods().cmd;
+            s.select.hover = Some(select::Hover { idx, x: p.x, y: p.y });
+        })
+        .on_hover_change(move |s: &mut App, over, _tx| {
+            if !over && s.select.hover.is_some_and(|h| h.idx == idx) { s.select.hover = None; }
         })
         .on_wheel(move |s: &mut App, ev: WheelEvent, _tx| {
             s.wheel += ev.dy;
@@ -159,6 +169,10 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
     // The selected text, for the tree (and screen readers); it takes no room.
     if let Some(text) = selected {
         grid_el = grid_el.child(el().key(format!("terminal/selection{}", if idx == 0 { String::new() } else { format!("/{idx}") })).label(text).pin(Some(0.0), Some(0.0), None, None).w(0.0).h(0.0));
+    }
+    // The link under the pointer, for the tree.
+    if let Some(link) = link {
+        grid_el = grid_el.cursor(Cursor::Pointer).child(el().key(format!("terminal/link-hover{}", if idx == 0 { String::new() } else { format!("/{idx}") })).label(link.url).pin(Some(0.0), Some(0.0), None, None).w(0.0).h(0.0));
     }
     let body = col().key(body_key).min_h(0.0).pt(PANEL_PAD_TOP).px(PANEL_PAD_X).pb(PANEL_PAD_BOTTOM).child(grid_el);
     if !split { return body.grow(1.0).w_full(); }
