@@ -13,9 +13,9 @@
 //! `terminal.attach` answers a channel and streams the terminal's screen (first paint, then
 //! `ESC [ ? 9001 l`) honouring CREDIT (a stream starts with 256 KiB); with `echo`, DATA input is
 //! written back as output to every viewer of the terminal. `terminal.kill` closes the viewers
-//! with `{"reason":"killed",…}`; a viewer CLOSE is answered with an empty CLOSE. Not served:
-//! `terminal.send` (answers `unavailable`, or the fixture's error), `automatic_input`,
-//! `resize_notifications` and FACTS.
+//! with `{"reason":"killed",…}`; a viewer CLOSE is answered with an empty CLOSE. `terminal.send`
+//! is logged and answers `{"turn":…}` for a live terminal (`not_found`, `finished`, or the
+//! fixture's error). Not served: `automatic_input`, `resize_notifications` and FACTS.
 //!
 //! Events: a connection that called `events.subscribe` also gets `created` (a `terminal.run`),
 //! `finished` (a kill, or an exit) and `removed` (a `terminal.rm`) as they happen, numbered from 1
@@ -258,6 +258,16 @@ impl Fixture {
 
     fn get(&self, address: &str) -> Result<Value, Fail> {
         self.terminals().into_iter().find(|t| t["address"] == address).ok_or(("not_found", format!("no terminal \"{address}\"")))
+    }
+
+    /// `terminal.send`: the text reaches a live terminal (it is only logged; a fixture error for
+    /// `terminal.send` answers before this runs).
+    fn send(&self, address: &str) -> Result<Value, Fail> {
+        let terminal = self.get(address)?;
+        if terminal["state"] != "live" {
+            return Err(("finished", format!("terminal {address} has finished")));
+        }
+        Ok(json!({"turn": terminal["turn"].as_u64().unwrap_or(0) + 1}))
     }
 
     /// `terminal.kill`: the terminal finishes; every viewer gets CLOSE `killed`.
@@ -542,7 +552,7 @@ impl Ctx {
                 });
                 Ok(json!({"seq": 0, "terminals": fx.terminals()}))
             }
-            "terminal.send" => Err(("unavailable", "the fake core does not serve terminal.send yet".into())),
+            "terminal.send" => fx.send(Self::address(params)),
             m => Err(("unknown_method", format!("unknown method {m}"))),
         }
     }
@@ -752,8 +762,14 @@ mod tests {
         assert_eq!(c.call("terminal.send", json!({}), T).unwrap_err().kind(), Some("blocked"));
         assert_eq!(c.call("nope", json!({}), T).unwrap_err().kind(), Some("unknown_method"));
         assert_eq!(c.call("terminal.kill", json!({"terminal": "t9"}), T).unwrap_err().kind(), Some("not_found"));
-        let c = connect(json!({}), None);
-        assert_eq!(c.call("terminal.send", json!({}), T).unwrap_err().kind(), Some("unavailable"));
+    }
+
+    #[test]
+    fn send_reaches_a_live_terminal_only() {
+        let c = connect(json!({"terminals": [{"address": "t1", "state": "live", "turn": 2}, {"address": "t2", "state": "finished"}]}), None);
+        assert_eq!(c.call("terminal.send", json!({"terminal": "t1", "text": "hi\n"}), T).unwrap()["turn"], 3);
+        assert_eq!(c.call("terminal.send", json!({"terminal": "t2", "text": "hi\n"}), T).unwrap_err().kind(), Some("finished"));
+        assert_eq!(c.call("terminal.send", json!({"terminal": "t9", "text": "hi\n"}), T).unwrap_err().kind(), Some("not_found"));
     }
 
     #[test]

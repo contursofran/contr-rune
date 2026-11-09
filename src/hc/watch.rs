@@ -80,6 +80,8 @@ pub enum HcUpdate {
     Restore(Result<Vec<Terminal>, String>),
     /// The terminals the core has now, with the time (ms) of each one's last event.
     Terminals { terminals: Vec<Terminal>, stamps: HashMap<String, u64> },
+    /// The outcome of telling a coordinator terminal about the owner's answer (`send_text`).
+    Told(Result<(), String>),
 }
 
 /// The update a notification makes, if any.
@@ -288,6 +290,17 @@ pub fn list_all(d: &Dialer) -> Result<Vec<Terminal>, String> {
     let list: super::wire::TerminalList = serde_json::from_value(v).map_err(|e| format!("bad terminal.list reply: {e}"))?;
     drop(link.keep);
     Ok(list.terminals)
+}
+
+/// `terminal.send` of `text` to `terminal`, on a short-lived connection. The error is the core's
+/// message (for example `agent is blocked: answer its prompt first`).
+pub fn send_text(d: &Dialer, terminal: &str, text: &str) -> Result<(), String> {
+    let link = d.dial().map_err(|e| e.to_string())?;
+    let conn = Conn::new(link.reader, link.writer, None);
+    handshake(&conn, false)?;
+    conn.call("terminal.send", json!({"terminal": terminal, "text": text}), CALL).map_err(|e| e.to_string())?;
+    drop(link.keep);
+    Ok(())
 }
 
 #[cfg(test)]

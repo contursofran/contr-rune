@@ -1,0 +1,13 @@
+{
+  "questions": [
+    {"id": "D7", "project": "contr", "coordinator": "t3", "from": "b-242", "title": "Ship H9", "question": "Ship the notch this week?",
+     "options": ["Ship now", "Wait a week", "Split it"], "recommended": 1, "asked": "2026-11-08T10:00:00Z", "future_field": "kept"},
+    {"id": "D8", "project": "contr", "coordinator": "t3", "question": "Which colour should the notch be?", "asked": "2026-11-08T11:00:00Z"},
+    {"id": "D9", "project": "elsewhere", "coordinator": "t3", "question": "Not in this project", "asked": "2026-11-08T11:30:00Z"}
+  ],
+  "todos": [
+    {"id": "T4", "project": "contr", "coordinator": "t3", "from": "b-242", "kind": "do", "text": "Renew the certificate", "pinned": "2026-11-08T12:00:00Z", "done": "0001-01-01T00:00:00Z"}
+  ],
+  "next_question": 10,
+  "next_todo": 5
+}
