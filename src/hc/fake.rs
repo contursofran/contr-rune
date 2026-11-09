@@ -26,6 +26,12 @@
 //! logged too (with its `resumed` param), and a viewer's FOCUS frame as
 //! `{"frame":"focus","terminal":…,"gained":true|false}`.
 //!
+//! Time: timed events (`after_ms`), heartbeats and `refuse_attach_ms` follow the fake's clock. It is
+//! the wall clock, except in a headless run, where the app sets it to the script's time each frame
+//! (`Fixture::set_time`) and holds the script while the fake is busy (`Fixture::settle`): `after_ms`
+//! then means script time and a test needs no real waiting. The fake's retry waits are short too
+//! (`Dialer::backoff`, `safety`, `poll`).
+//!
 //! Control event (H4): a timed event with `"method":"fake"` is not sent; it acts on the core.
 //! `{"drop":"framed"}` cuts every framed line (the viewers see the connection end, as when the core
 //! goes away); `"refuse_attach_ms":N` makes `terminal.attach` fail with kind `busy` for N ms.
@@ -37,7 +43,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -104,7 +110,30 @@ const CHUNK: usize = 16 * 1024;
 pub struct Fixture {
     raw: Value,
     core: Mutex<Core>,
+    clock: Clock,
 }
+
+/// The fake's time, in ms: timed events, heartbeats and attach refusals follow it. By default it
+/// is the wall clock. A headless run uses a manual clock that the app sets each frame, so
+/// `after_ms` is script time and a test never waits on real time.
+enum Clock {
+    Wall(std::time::Instant),
+    Manual(Manual),
+}
+
+/// A clock moved by `Fixture::set_time`. Work that an event starts (the app's reply, a new call)
+/// runs on threads in real time, but script time runs far faster, so `settle` holds the script back
+/// while the fake is busy.
+struct Manual {
+    /// The time, and the times that waiting threads wait for.
+    state: Mutex<(u64, Vec<u64>)>,
+    changed: Condvar,
+    /// The script waits until this instant (see `Fixture::settle`).
+    busy_until: Mutex<std::time::Instant>,
+}
+
+/// How long after the last activity the fake still counts as busy.
+const SETTLE: Duration = Duration::from_millis(10);
 
 /// What `terminal.run/kill/rm` change; shared by every connection to the fixture.
 struct Core {
@@ -118,8 +147,8 @@ struct Core {
     seq: u64,
     /// Every connection, for the control event `drop`.
     conns: Vec<Weak<Ctx>>,
-    /// `terminal.attach` fails (kind `busy`) until this instant.
-    refuse_attach_until: Option<std::time::Instant>,
+    /// `terminal.attach` fails (kind `busy`) until this time on the fake's clock (ms).
+    refuse_attach_until: Option<u64>,
     /// The error kind of a refused attach: `busy`, or `unavailable` with `refuse_attach_kind`.
     refuse_attach_kind: &'static str,
 }
@@ -141,7 +170,62 @@ impl Fixture {
         let terminals: Vec<Value> = raw["terminals"].as_array().cloned().unwrap_or_default();
         let next = terminals.iter().filter_map(|t| t["address"].as_str()?.strip_prefix('t')?.parse::<u64>().ok()).max().map_or(1, |n| n + 1);
         let screens = raw["screens"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_default();
-        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0, conns: Vec::new(), refuse_attach_until: None, refuse_attach_kind: "busy" }), raw }
+        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0, conns: Vec::new(), refuse_attach_until: None, refuse_attach_kind: "busy" }), raw, clock: Clock::Wall(std::time::Instant::now()) }
+    }
+
+    /// Switch to a manual clock that starts at 0 and moves only with `set_time`.
+    pub fn with_manual_clock(mut self) -> Fixture {
+        self.clock = Clock::Manual(Manual { state: Mutex::new((0, Vec::new())), changed: Condvar::new(), busy_until: Mutex::new(std::time::Instant::now()) });
+        self
+    }
+
+    /// Move a manual clock to `ms` (it never goes back); a wall clock ignores this.
+    pub fn set_time(&self, ms: u64) {
+        let Clock::Manual(m) = &self.clock else { return };
+        let mut state = m.state.lock().unwrap();
+        if state.1.iter().any(|d| *d <= ms) {
+            self.bump();
+        }
+        state.0 = state.0.max(ms);
+        m.changed.notify_all();
+    }
+
+    /// Note activity: a manual clock's `settle` waits for a while after it.
+    pub fn bump(&self) {
+        if let Clock::Manual(m) = &self.clock {
+            *m.busy_until.lock().unwrap() = std::time::Instant::now() + SETTLE;
+        }
+    }
+
+    /// Wait, in real time, until the fake has been quiet for `SETTLE`.
+    pub fn settle(&self) {
+        let Clock::Manual(m) = &self.clock else { return };
+        while let Some(left) = m.busy_until.lock().unwrap().checked_duration_since(std::time::Instant::now()) {
+            std::thread::sleep(left);
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        match &self.clock {
+            Clock::Wall(start) => start.elapsed().as_millis() as u64,
+            Clock::Manual(m) => m.state.lock().unwrap().0,
+        }
+    }
+
+    /// Block until the fake's clock reaches `ms`.
+    fn wait_until(&self, ms: u64) {
+        match &self.clock {
+            Clock::Wall(_) => std::thread::sleep(Duration::from_millis(ms.saturating_sub(self.now_ms()))),
+            Clock::Manual(m) => {
+                let mut state = m.state.lock().unwrap();
+                state.1.push(ms);
+                state = m.changed.wait_while(state, |s| s.0 < ms).unwrap();
+                let at = state.1.iter().position(|d| *d == ms).unwrap();
+                state.1.swap_remove(at);
+                drop(state);
+                self.bump();
+            }
+        }
     }
 
     pub(crate) fn terminals(&self) -> Vec<Value> {
@@ -230,7 +314,7 @@ impl Fixture {
     pub(crate) fn control(&self, params: &Value) {
         if let Some(ms) = params["refuse_attach_ms"].as_u64() {
             self.core.lock().unwrap().refuse_attach_kind = if params["refuse_attach_kind"] == "unavailable" { "unavailable" } else { "busy" };
-            self.core.lock().unwrap().refuse_attach_until = Some(std::time::Instant::now() + Duration::from_millis(ms));
+            self.core.lock().unwrap().refuse_attach_until = Some(self.now_ms() + ms);
         }
         if params["drop"] == "framed" {
             let conns: Vec<Arc<Ctx>> = self.core.lock().unwrap().conns.iter().filter_map(Weak::upgrade).collect();
@@ -496,6 +580,7 @@ impl Ctx {
 
     fn respond(self: &Arc<Self>, req: &Value) -> Value {
         let (id, method, params) = (req["id"].clone(), req["method"].as_str().unwrap_or("").to_owned(), req["params"].clone());
+        self.fx.bump();
         if MUTATING.contains(&method.as_str()) {
             self.log(&json!({"method": method, "params": params}));
         }
@@ -531,10 +616,9 @@ impl Ctx {
                 fx.core.lock().unwrap().subscribers.push(Arc::downgrade(self));
                 let (events, me) = (fx.timed_events(), self.clone());
                 let _ = std::thread::Builder::new().name("hc-fake-events".into()).spawn(move || {
-                    let mut at = 0;
+                    let base = me.fx.now_ms();
                     for (t, ev) in events {
-                        std::thread::sleep(Duration::from_millis(t - at));
-                        at = t;
+                        me.fx.wait_until(base + t);
                         if ev["method"] == "fake" {
                             me.fx.control(&ev["params"]);
                             continue;
@@ -544,7 +628,7 @@ impl Ctx {
                         }
                     }
                     for seq in 1.. {
-                        std::thread::sleep(HEARTBEAT);
+                        me.fx.wait_until(me.fx.now_ms() + HEARTBEAT.as_millis() as u64);
                         if me.send_json(&json!({"jsonrpc": "2.0", "method": "heartbeat", "params": {"seq": seq}})).is_err() {
                             return;
                         }
@@ -562,7 +646,7 @@ impl Ctx {
             return Err(("needs_framed", "terminal.attach needs a framed connection (hello framed:true)".into()));
         }
         let address = Self::address(params);
-        if self.fx.core.lock().unwrap().refuse_attach_until.is_some_and(|t| std::time::Instant::now() < t) {
+        if self.fx.core.lock().unwrap().refuse_attach_until.is_some_and(|t| self.fx.now_ms() < t) {
             let kind = self.fx.core.lock().unwrap().refuse_attach_kind;
             return Err((kind, "the fake core refuses attaches for now".into()));
         }
@@ -596,6 +680,7 @@ impl Ctx {
     fn stream_frame(&self, channel: u32, kind: Option<Kind>, payload: &[u8]) {
         let Some(stream) = self.streams.lock().unwrap().get(&channel).cloned() else { return };
         let terminal = stream.terminal.clone();
+        self.fx.bump();
         match kind {
             Some(Kind::Data) => {
                 self.log(&json!({"frame": "data", "terminal": terminal, "bytes": String::from_utf8_lossy(payload)}));
@@ -797,6 +882,27 @@ mod tests {
         assert_eq!(snap["terminals"][0]["address"], "t1");
         let n = rx.recv_timeout(T).unwrap();
         assert_eq!((n.method.as_str(), n.params["type"].as_str()), ("event", Some("title")));
+    }
+
+    #[test]
+    fn a_manual_clock_sends_timed_events_only_when_it_reaches_them_and_settles_after_them() {
+        let (tx, rx) = channel();
+        let fx = Arc::new(Fixture::from_value(json!({"events": [{"after_ms": 500, "method": "event", "params": {"seq": 1, "type": "title", "terminal": "t1", "data": {"title": "x"}}}]})).with_manual_clock());
+        let (req_r, req_w) = pipe();
+        let (rep_r, rep_w) = pipe();
+        let served = fx.clone();
+        std::thread::spawn(move || serve(served, Box::new(req_r), Box::new(rep_w)));
+        let c = Conn::new(Box::new(rep_r), Box::new(req_w), Some(tx));
+        c.call("events.subscribe", json!({}), T).unwrap();
+        fx.set_time(499);
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err(), "the clock has not reached the event");
+        fx.set_time(500);
+        assert_eq!(rx.recv_timeout(T).unwrap().params["type"], "title");
+        fx.set_time(100);
+        assert_eq!(fx.now_ms(), 500, "the clock never goes back");
+        let started = std::time::Instant::now();
+        fx.settle();
+        assert!(started.elapsed() >= SETTLE / 2, "the event keeps the fake busy for a moment");
     }
 
     // ───── framed mode ─────
