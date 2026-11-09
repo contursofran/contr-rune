@@ -1,5 +1,5 @@
 //! The saved projects (C5, K2): the open folders in order and the selected one, kept in a small
-//! JSON file of our own (`{"version":1,"open":[path…],"selected":path,"hidden":[path…],"recent":[{"path","at"}]}`;
+//! JSON file of our own (`{"version":1,"open":[path…],"selected":path,"hidden":[path…],"recent":[{"path","at"}],"agent":address}`;
 //! Go contr's file is not used). `hidden` (C6) and `recent` are new: a file without them still loads.
 //! A missing or broken file means no saved projects. `CONTR_PROJECTS_FILE` points the file
 //! elsewhere (tests); a headless run without it never reads or writes the owner's real file.
@@ -31,6 +31,9 @@ pub struct Saved {
     /// Hidden projects, newest first, at most `MAX_RECENT`.
     #[serde(default)]
     pub recent: Vec<Recent>,
+    /// The selected agent's address (Go D173); `None` for no agent.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// Where the file lives: `CONTR_PROJECTS_FILE`, else `~/Library/Application Support/contr-rune/projects.json`
@@ -99,6 +102,7 @@ mod tests {
             selected: Some(b.into()),
             hidden: vec!["/h".into()],
             recent: vec![Recent { path: "/h".into(), at: "2026-11-09T10:00:00Z".into() }],
+            agent: Some("t17".into()),
         };
         assert_eq!(parse(&render(&saved)).unwrap(), saved);
         assert_eq!(parse(&render(&Saved::default())).unwrap().selected, None);
@@ -107,7 +111,7 @@ mod tests {
     #[test]
     fn a_file_from_before_hidden_and_recent_still_loads() {
         let s = parse(r#"{"version":1,"open":["/a"],"selected":"/a"}"#).unwrap();
-        assert_eq!((s.open, s.hidden, s.recent), (vec![PathBuf::from("/a")], vec![], vec![]));
+        assert_eq!((s.open, s.hidden, s.recent, s.agent), (vec![PathBuf::from("/a")], vec![], vec![], None));
     }
 
     #[test]
@@ -131,10 +135,10 @@ mod tests {
         unsafe { std::env::set_var("CONTR_PROJECTS_FILE", &file) };
         assert_eq!(load(), None, "a missing file has no projects");
         let recent = vec![Recent { path: b.clone(), at: "2026-11-09T10:00:00Z".into() }];
-        save(&Saved { open: vec![a.clone(), b.clone()], selected: Some(b.clone()), hidden: vec![b.clone()], recent: recent.clone() }).unwrap();
+        save(&Saved { open: vec![a.clone(), b.clone()], selected: Some(b.clone()), hidden: vec![b.clone()], recent: recent.clone(), agent: Some("t3".into()) }).unwrap();
         assert!(!file.with_extension("json.tmp").exists(), "the temp file is renamed away");
         let s = load().unwrap();
-        assert_eq!((s.open, s.selected, s.hidden, s.recent), (vec![a.clone(), b.clone()], Some(b.clone()), vec![b.clone()], recent));
+        assert_eq!((s.open, s.selected, s.hidden, s.recent, s.agent), (vec![a.clone(), b.clone()], Some(b.clone()), vec![b.clone()], recent, Some("t3".to_owned())));
         std::fs::remove_dir_all(&b).unwrap();
         let s = load().unwrap();
         assert_eq!((s.open, s.hidden, s.recent), (vec![a.clone()], vec![], vec![]), "a folder that is gone is dropped");

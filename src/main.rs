@@ -174,6 +174,10 @@ struct App {
     gh: github::Info,
     /// The agent row that is selected (its address). Showing its terminal comes in H8.
     selected_agent: Option<String>,
+    /// The agent saved as selected (D173), until hc's first list and the restore have both come.
+    launch_agent: Option<String>,
+    /// Bits: 1 the first terminal list came, 2 the launch restore ran.
+    launch_seen: u8,
     /// Claude sessions whose tab was closed: they stay out of the set until selected in the sidebar.
     hidden: HashSet<String>,
     agent_menu: sidebar::AgentMenu,
@@ -205,6 +209,7 @@ fn init() -> App {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
     // `CONTR_PROJECTS` wins; else the saved projects (C5); else the folder we started in and home.
     let mut saved_selected = None;
+    let mut launch_agent = None;
     let mut hidden_paths = Vec::new();
     let mut recent = Vec::new();
     let paths: Vec<PathBuf> = match std::env::var("CONTR_PROJECTS").ok().filter(|l| !l.is_empty()) {
@@ -217,6 +222,7 @@ fn init() -> App {
         None => match projects::load() {
             Some(saved) => {
                 saved_selected = saved.selected;
+                launch_agent = saved.agent;
                 hidden_paths = saved.hidden;
                 recent = saved.recent;
                 saved.open
@@ -293,6 +299,8 @@ fn init() -> App {
         agents_minute: 0,
         gh: github::Info::new(),
         selected_agent: None,
+        launch_agent,
+        launch_seen: 0,
         hidden: HashSet::new(),
         agent_menu: Default::default(),
         tab_menu: None,
@@ -377,6 +385,20 @@ impl App {
             None if !self.tabs.iter().any(|t| t.agent.is_none()) && !self.projects.is_empty() => self.open_tab(self.selected_project),
             None => {}
         }
+        self.launch_seen |= 2;
+        self.select_launch_agent();
+    }
+
+    /// Select the agent saved as selected (D173) once hc's first list and the restore are both in:
+    /// its tab is reused when it has one. An agent that is gone is dropped (normal launch).
+    fn select_launch_agent(&mut self) {
+        if self.launch_seen != 3 { return; }
+        let Some(address) = self.launch_agent.take() else { return };
+        if self.agents.iter().any(|a| a.address == address && a.state != model::AgentState::Ended) {
+            self.select_agent(address);
+        } else {
+            self.save_projects();
+        }
     }
 
     /// Tell the terminals which pane has the keyboard focus: a FOCUS frame when it changes.
@@ -417,6 +439,8 @@ impl App {
         self.hc_terminals = terminals;
         self.hc_stamps = stamps;
         self.refresh_agents();
+        self.launch_seen |= 1;
+        self.select_launch_agent();
         self.sync_menu();
     }
 
@@ -541,7 +565,9 @@ impl App {
         };
         if let Some(kept) = kept { self.projects[project].last_worker = kept; }
         // Selecting a plain tab clears the agent selection; an agent's tab sets it.
+        let before = self.selected_agent.take();
         self.selected_agent = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| t.agent.clone());
+        let agent_changed = before != self.selected_agent;
         // A split belongs to one project: a tab of another project takes the whole panel.
         if self.split.as_ref().is_some_and(|sp| sp.project != project) { self.split = None; }
         // In a split the tab goes to the focused pane, or, when the other pane shows it, focus moves there.
@@ -559,6 +585,7 @@ impl App {
         if self.active != Some(id) { self.find.close(); }
         self.active = Some(id);
         self.sync_tabs();
+        if agent_changed { self.save_projects(); }
     }
 
     fn select_project(&mut self, project: usize) {
@@ -581,6 +608,8 @@ impl App {
             selected: self.projects.get(self.selected_project).map(|p| p.path.clone()),
             hidden: paths(true),
             recent: self.recent.clone(),
+            // Until the launch agent is settled the file keeps it.
+            agent: self.launch_agent.clone().or_else(|| self.selected_agent.clone()),
         };
         if let Err(e) = projects::save(&saved) {
             self.error = Some(format!("couldn't save the projects: {e}"));

@@ -96,7 +96,7 @@ impl App {
         self
     }
 
-    /// A file in the scratch folder with `text`, its path in the variable `env`; `Run::file(name)` reads it back.
+    /// A file in the scratch folder with `text` (`{root}` is the scratch folder), its path in the variable `env`; `Run::file(name)` reads it back.
     pub fn file(mut self, env: &'static str, name: &'static str, text: impl Into<String>) -> App {
         self.files.push((env, name, text.into()));
         self
@@ -159,7 +159,7 @@ impl App {
             cmd.env(name, value);
         }
         for (env, name, text) in &self.files {
-            std::fs::write(dir.join(name), text).unwrap();
+            std::fs::write(dir.join(name), text.replace("{root}", &dirs.root)).unwrap();
             cmd.env(env, dir.join(name));
         }
         if let Some(s) = self.scene {
