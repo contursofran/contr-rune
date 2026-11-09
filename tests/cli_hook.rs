@@ -99,8 +99,24 @@ fn a_session_that_is_not_a_worker_gets_the_context_and_orchestrating_labels_in_o
 }
 
 #[test]
-fn a_missing_transcript_exits_1_and_never_2() {
-    let o = stop("missing", &[PROMPT], true, json!({"transcript_path": "/nonexistent/t.jsonl"}));
+fn a_worker_with_no_transcript_still_reports_and_says_it_may_repeat() {
+    let extra = json!({"transcript_path": "/nonexistent/t.jsonl", "last_assistant_message": "all done,\nPR is up"});
+    let o = stop("missing", &[], true, extra);
+    assert_eq!((o.code, o.err.as_str()), (0, ""));
+    let text = "ended its turn without a report. Last words: all done, PR is up (no transcript: this may repeat a report it already sent)";
+    assert_eq!(o.calls, [json!({"method": "terminal.send", "params": {"terminal": "t3", "text": text, "caller": "t1"}})]);
+}
+
+#[test]
+fn a_coordinator_with_no_transcript_does_nothing() {
+    let o = stop("missing-orch", &[], false, json!({"transcript_path": "/nonexistent/t.jsonl"}));
+    assert_eq!((o.code, o.err.as_str()), (0, ""));
+    assert_eq!(o.calls, Vec::<Value>::new());
+}
+
+#[test]
+fn an_unreadable_transcript_exits_1_and_never_2() {
+    let o = stop("unreadable", &[], true, json!({"transcript_path": std::env::temp_dir()}));
     assert_eq!(o.code, 1);
     assert!(o.err.contains("transcript"), "{}", o.err);
 }

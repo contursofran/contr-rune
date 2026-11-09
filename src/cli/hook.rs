@@ -30,6 +30,7 @@ Claude Code runs it and gives it the hook input on stdin.
 
 stop, in a worker (CONTR_COORDINATOR is set): a turn that sent no report with hc send
 gets one, \"ended its turn without a report. Last words: ...\", sent to the coordinator.
+With no transcript file it still sends one, noting that it may repeat a report.
 In any hc session it also labels the terminal with the model and effort (contr.model,
 contr.effort) for the sidebar row. It never stops the turn.
 
@@ -154,7 +155,11 @@ fn save_request(input: &Value, transcript: &str, env: &restore::Env) -> Result<O
     if input["stop_hook_active"] == true || transcript.is_empty() {
         return Ok(None);
     }
-    let tokens = turn::context_tokens(Path::new(transcript)).map_err(|e| format!("transcript {transcript:?}: {e}"))?;
+    let tokens = match turn::context_tokens(Path::new(transcript)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("transcript {transcript:?}: {e}")),
+    };
     let asked = env.asked(input["session_id"].as_str().unwrap_or_default());
     Ok(restore::should_ask(tokens, env.save_at(), asked).then_some(tokens))
 }
@@ -255,16 +260,28 @@ pub(super) fn read_input(stdin: impl Read + Send + 'static) -> Result<Value, Str
     }
 }
 
-/// The text to send the coordinator when the last turn sent no report, else `None`.
+/// The text to send the coordinator when the last turn sent no report, else `None`. A missing
+/// transcript (Claude Code may save none) still gives the report, with a note that it may repeat
+/// one: without the transcript the turn's sends are not known.
 fn missed_turn(input: &Value, transcript: &str) -> Result<Option<String>, String> {
-    let bytes = std::fs::read(transcript).map_err(|e| format!("transcript {transcript:?}: {e}"))?;
+    let cwd = input["cwd"].as_str().unwrap_or_default();
+    let last_words = input["last_assistant_message"].as_str().filter(|s| !s.trim().is_empty());
+    let bytes = match std::fs::read(transcript) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some(format!("{}{NO_TRANSCRIPT_NOTE}", missed_report(last_words.unwrap_or_default(), cwd))));
+        }
+        Err(e) => return Err(format!("transcript {transcript:?}: {e}")),
+    };
     let turn = turn::last_turn(&bytes);
     if turn.reported {
         return Ok(None);
     }
-    let said = input["last_assistant_message"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(&turn.said);
-    Ok(Some(missed_report(said, input["cwd"].as_str().unwrap_or_default())))
+    Ok(Some(missed_report(last_words.unwrap_or(&turn.said), cwd)))
 }
+
+/// Added to a report built without a transcript.
+const NO_TRANSCRIPT_NOTE: &str = " (no transcript: this may repeat a report it already sent)";
 
 /// The report for a turn that sent none. `said` is cut to one line of `SAID_MAX` characters;
 /// `RESULT.md` in the worker's folder is pointed to.
@@ -302,7 +319,9 @@ fn labels(input: &Value, transcript: &str, env: &Env) -> Vec<(&'static str, Stri
     }
     if env.coordinator.is_empty() && !transcript.is_empty() {
         let path = Path::new(transcript);
-        labels.extend(context_labels(turn::context_tokens(path).unwrap_or(0), &env.compact_window));
+        if let Ok(tokens) = turn::context_tokens(path) {
+            labels.extend(context_labels(tokens, &env.compact_window));
+        }
         if turn::ran_command(path, restore::ORCHESTRATE_COMMAND).unwrap_or(false) {
             labels.push(("contr.orchestrating", "1".to_owned()));
         }
