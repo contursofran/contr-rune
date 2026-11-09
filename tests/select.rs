@@ -83,3 +83,52 @@ fn typing_clears_the_selection_and_still_reaches_the_shell() {
     assert_eq!(selected(&t), None);
     assert_eq!(t.data("t1"), "x");
 }
+
+/// Down on row `row`, move to `y` (a grid-relative offset of the first row's top) and hold there until `up`.
+fn hold_at(origin: (f64, f64), row: f64, y: f64, up: f64) -> Vec<Value> {
+    let (x, y0) = origin;
+    vec![
+        json!({ "t": 0.5, "type": "down", "x": x + 1.0, "y": y0 + row * LINE_H + 10.0 }),
+        json!({ "t": 0.6, "type": "move", "x": x + 40.0, "y": y0 + y }),
+        json!({ "t": up, "type": "up", "x": x + 40.0, "y": y0 + y }),
+    ]
+}
+
+fn lines(run: &Run) -> usize { selected(run).map_or(0, |t| t.lines().count()) }
+
+#[test]
+fn a_triple_press_selects_the_whole_line() {
+    let o = origin();
+    let t = app().events(vec![json!({ "t": 0.5, "type": "triple-click", "x": o.0 + 10.0 * CELL_W + 3.0, "y": o.1 + 1.0 * LINE_H + 10.0 })]).run();
+    assert_eq!(selected(&t).as_deref(), Some("ERROR: expected semicolon\n"));
+}
+
+fn scrolled() -> App { App::new().fixture("scroll.json") }
+
+#[test]
+fn a_drag_held_above_the_grid_scrolls_back_and_keeps_selecting() {
+    let o = scrolled().run().rect("l0");
+    let o = (o[0], o[1]);
+    let short = scrolled().events(hold_at(o, 3.0, -30.0, 0.8)).run();
+    let long = scrolled().events(hold_at(o, 3.0, -30.0, 1.6)).run();
+    // Row 3 is the anchor; the selection grows by a line on each tick the pointer stays above.
+    assert!(lines(&short) > 4, "{}", lines(&short));
+    assert!(lines(&long) > lines(&short) + 3, "{} vs {}", lines(&long), lines(&short));
+}
+
+#[test]
+fn the_scrolling_stops_when_the_pointer_comes_back_or_the_button_goes_up() {
+    let o = scrolled().run().rect("l0");
+    let o = (o[0], o[1]);
+    // Back inside at 1.0: nothing grows between 1.1 and 1.6.
+    let mut back = hold_at(o, 3.0, -30.0, 1.5);
+    back[2]["y"] = json!(o.1 + 2.0 * LINE_H);
+    back.insert(2, json!({ "t": 1.0, "type": "move", "x": o.0 + 40.0, "y": o.1 + 2.0 * LINE_H }));
+    let a = scrolled().events(back.clone()).end(1.1).run();
+    let b = scrolled().events(back.clone()).end(1.7).run();
+    assert_eq!(lines(&a), lines(&b));
+    // Released at 1.0: the same.
+    let c = scrolled().events(hold_at(o, 3.0, -30.0, 1.0)).end(1.1).run();
+    let d = scrolled().events(hold_at(o, 3.0, -30.0, 1.0)).end(1.7).run();
+    assert_eq!(lines(&c), lines(&d));
+}

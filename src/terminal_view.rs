@@ -140,7 +140,7 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
                     if tx.open_url(&url).is_ok() { s.select.opened = Some(url); }
                 }
             }
-            if d.data == 0.0 { select::drag(s, idx, d); }
+            if d.data == 0.0 { select::drag(s, idx, d, tx); }
         })
         .on_wheel(move |s: &mut App, ev: WheelEvent, _tx| {
             s.wheel += ev.dy;

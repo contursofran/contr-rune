@@ -10,7 +10,7 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Term;
-use rune::{Drag, Phase};
+use rune::{Drag, Phase, Tx};
 
 use crate::theme::{CELL_W, LINE_H};
 use crate::App;
@@ -21,6 +21,21 @@ pub struct Select {
     owner: Option<(u64, u64)>,
     /// The last link a ⌘-click opened (T2). Headless runs show it in the tree (`terminal/opened-url`), since they open nothing.
     pub opened: Option<String>,
+    /// A drag held above or below the grid: it scrolls on every tick (T1b).
+    auto: Option<Auto>,
+}
+
+/// A selection drag whose pointer is outside the grid: the pane, which way to scroll (+1 back into the
+/// scrollback, -1 towards the screen) and the pointer's last position in the grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Auto { idx: usize, dir: i32, x: f32, y: f32 }
+
+/// How often a held drag outside the grid scrolls one line.
+pub const AUTO_EVERY: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Which way a pointer at `y` scrolls a grid `h` high: +1 above it, -1 below it, 0 inside.
+fn scroll_dir(y: f32, h: f32) -> i32 {
+    if y < 0.0 { 1 } else if y >= h { -1 } else { 0 }
 }
 
 /// The cell under `(x, y)` (points inside the grid area) and the side of it the pointer is on.
@@ -43,8 +58,12 @@ pub fn text<T>(term: &Term<T>) -> Option<String> {
 }
 
 /// The pointer gesture of pane `idx`'s grid: a press clears the selection (a second press selects
-/// the word), a drag selects from where it began.
-pub fn drag(s: &mut App, idx: usize, d: &Drag) {
+/// the word, a third the line), a drag selects from where it began.
+pub fn drag(s: &mut App, idx: usize, d: &Drag, tx: &mut Tx) {
+    let dir = if d.phase == Phase::Move && d.clicks == 1 { scroll_dir(d.y, d.h) } else { 0 };
+    let was_idle = s.select.auto.is_none();
+    s.select.auto = (dir != 0).then_some(Auto { idx, dir, x: d.x, y: d.y });
+    if was_idle && dir != 0 { tx.wake_after(AUTO_EVERY); }
     let Some(t) = s.pane_tab(idx).and_then(|id| s.tabs.iter().find(|t| t.session.id() == id)) else { return };
     let id = t.session.id();
     let mut term = t.session.term().lock().unwrap();
@@ -52,9 +71,10 @@ pub fn drag(s: &mut App, idx: usize, d: &Drag) {
     match d.phase {
         Phase::Down => {
             term.selection = None;
-            if d.clicks == 2 {
+            let kind = match d.clicks { 2 => Some(SelectionType::Semantic), 3 => Some(SelectionType::Lines), _ => None };
+            if let Some(kind) = kind {
                 let (p, side) = at(&term, d.x, d.y);
-                term.selection = Some(Selection::new(SelectionType::Semantic, p, side));
+                term.selection = Some(Selection::new(kind, p, side));
             }
         }
         Phase::Move if d.clicks == 1 => {
@@ -68,6 +88,21 @@ pub fn drag(s: &mut App, idx: usize, d: &Drag) {
         _ => return,
     }
     s.select.owner = term.selection.is_some().then_some((id, generation));
+}
+
+/// One tick of a drag held outside the grid: scroll a line and stretch the selection to the grid's edge.
+/// True while it goes on (the caller asks for the next tick).
+pub fn autoscroll(s: &mut App) -> bool {
+    let Some(a) = s.select.auto else { return false };
+    let Some(t) = s.pane_tab(a.idx).and_then(|id| s.tabs.iter().find(|t| t.session.id() == id)) else {
+        s.select.auto = None;
+        return false;
+    };
+    t.session.scroll(a.dir);
+    let mut term = t.session.term().lock().unwrap();
+    let (p, side) = at(&term, a.x, a.y);
+    if let Some(sel) = term.selection.as_mut() { sel.update(p, side); }
+    true
 }
 
 /// The link under `(x, y)` of pane `idx`'s grid that ⌘-click opens (T2): an OSC 8 hyperlink on the cell, else
@@ -209,6 +244,11 @@ mod tests {
         assert_eq!(cell(9999.0, 9999.0, 0).0, 23);
         assert_eq!(cell(9999.0, 0.0, 0).1, 79);
         assert_eq!(cell(-30.0, -30.0, 0), (0, 0, Side::Left));
+    }
+
+    #[test]
+    fn a_pointer_above_the_grid_scrolls_back_and_below_it_forward() {
+        assert_eq!([scroll_dir(-0.5, 100.0), scroll_dir(0.0, 100.0), scroll_dir(99.9, 100.0), scroll_dir(100.0, 100.0)], [1, 0, 0, -1]);
     }
 
     fn url(text: &str, needle: &str) -> Option<String> {
