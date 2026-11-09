@@ -1,0 +1,14 @@
+{
+  "hello": {"generation": 1, "version": "0.1.19", "core": {"id": "913cbec723543c5e29a10355871310fc", "name": "fake-core"}},
+  "echo": true,
+  "terminals": [
+    {"address": "t8", "name": "term-0307", "state": "live", "created_ms": 300, "labels": {"contr": "agent", "role": "terminal", "project": "contr-rune"}},
+    {"address": "t2", "name": "term-0101", "state": "live", "created_ms": 100, "labels": {"contr": "agent", "role": "terminal", "project": "contr-rune"}},
+    {"address": "t5", "name": "term-0204", "state": "live", "created_ms": 200, "labels": {"contr": "agent", "role": "terminal", "project": "contr-rune"}}
+  ],
+  "screens": {
+    "t2": "$ cargo build\r\n   Compiling contr-rune v0.0.1\r\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.65s\r\n$ ",
+    "t5": "$ git status\r\nOn branch part-h4-hc-reopen\r\nnothing to commit, working tree clean\r\n$ ",
+    "t8": "$ ls\r\nCargo.toml  src  tests  docs\r\n$ "
+  }
+}

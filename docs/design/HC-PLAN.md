@@ -193,8 +193,11 @@ has a live child that is working → `Idle` otherwise → `Ended` if `state == f
 
 - `CONTR_HC=<path>` program; `CONTR_HC=off` hc off (local PTY tabs).
 - `CONTR_HC_FAKE=<fixture.json>`: in-process fake core. `CONTR_HC_FAKE_LOG=<file>`: the fake appends each mutating
-  call (`terminal.run`, `terminal.send`, `terminal.kill`, `terminal.rm`) and each stream input frame as a JSON line
-  `{"method":…,"params":…}` / `{"frame":"data|resize|close","terminal":…,"bytes":"<utf8>"|"cols","rows"}`.
+  call (`terminal.run`, `terminal.send`, `terminal.kill`, `terminal.rm`, `terminal.attach` (H4)) and each stream input frame as a JSON line
+  `{"method":…,"params":…}` / `{"frame":"data|resize|close|focus","terminal":…,"bytes":"<utf8>"|"cols","rows"|"gained"}`.
+  H4: a timed fixture event with `"method":"fake"` is a control event: `{"drop":"framed"}` cuts every framed line,
+  `{"refuse_attach_ms":N}` makes `terminal.attach` fail with kind `busy` for N ms. Against the fake the re-attach
+  backoff is 50 ms doubled to 200 ms (`Dialer::backoff`), not 0.5 s to 5 s.
 - Headless runs (`--snap`, `--tree`, `--script`) never dial a real hc: without `CONTR_HC_FAKE` they use local PTYs.
 - Fixture: `{"hello":{…},"status":{…},"terminals":[Terminal…],"screens":{"t3":"<first paint text with \r\n>"},"events":[{"after_ms":300,"method":"event","params":{…}}],"errors":{"terminal.send":{"kind":"blocked","message":"…"}},"echo":true}`.
   The fake's `terminal.run` makes `t<next>` with the given labels and screen `"$ "`; with `echo` it writes stream

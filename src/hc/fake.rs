@@ -22,7 +22,13 @@
 //! by the fake (the fixture's timed events carry their own `seq`). The fixture key `exit_on`
 //! (for example `"exit\r"`) makes that stream input end the terminal as a shell that exits:
 //! viewers get CLOSE `{"reason":"exited","exit_code":0,"signal":null}`. The key `run_screen`
-//! is the first paint of a terminal made by `terminal.run` (default `"$ "`).
+//! is the first paint of a terminal made by `terminal.run` (default `"$ "`). `terminal.attach` is
+//! logged too (with its `resumed` param), and a viewer's FOCUS frame as
+//! `{"frame":"focus","terminal":…,"gained":true|false}`.
+//!
+//! Control event (H4): a timed event with `"method":"fake"` is not sent; it acts on the core.
+//! `{"drop":"framed"}` cuts every framed line (the viewers see the connection end, as when the core
+//! goes away); `"refuse_attach_ms":N` makes `terminal.attach` fail with kind `busy` for N ms.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -39,7 +45,7 @@ use serde_json::{Value, json};
 use super::framed::{Decoder, Kind, SendWindow, encode, parse_credit, parse_resize};
 
 /// Methods that change the core: logged.
-const MUTATING: [&str; 4] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm"];
+const MUTATING: [&str; 5] = ["terminal.run", "terminal.send", "terminal.kill", "terminal.rm", "terminal.attach"];
 
 /// How often the fake sends a heartbeat (the core sends one every 15 s).
 const HEARTBEAT: Duration = Duration::from_secs(15);
@@ -110,6 +116,10 @@ struct Core {
     subscribers: Vec<Weak<Ctx>>,
     /// Number of the last event the fake made.
     seq: u64,
+    /// Every connection, for the control event `drop`.
+    conns: Vec<Weak<Ctx>>,
+    /// `terminal.attach` fails (kind `busy`) until this instant.
+    refuse_attach_until: Option<std::time::Instant>,
 }
 
 impl fmt::Debug for Fixture {
@@ -129,10 +139,10 @@ impl Fixture {
         let terminals: Vec<Value> = raw["terminals"].as_array().cloned().unwrap_or_default();
         let next = terminals.iter().filter_map(|t| t["address"].as_str()?.strip_prefix('t')?.parse::<u64>().ok()).max().map_or(1, |n| n + 1);
         let screens = raw["screens"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_default();
-        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0 }), raw }
+        Fixture { core: Mutex::new(Core { terminals, screens, next, streams: HashMap::new(), subscribers: Vec::new(), seq: 0, conns: Vec::new(), refuse_attach_until: None }), raw }
     }
 
-    fn terminals(&self) -> Vec<Value> {
+    pub(crate) fn terminals(&self) -> Vec<Value> {
         self.core.lock().unwrap().terminals.clone()
     }
 
@@ -212,6 +222,19 @@ impl Fixture {
         out["output"] = json!("");
         out["wait"] = Value::Null;
         Ok(out)
+    }
+
+    /// A control event from the fixture (see the module docs).
+    pub(crate) fn control(&self, params: &Value) {
+        if let Some(ms) = params["refuse_attach_ms"].as_u64() {
+            self.core.lock().unwrap().refuse_attach_until = Some(std::time::Instant::now() + Duration::from_millis(ms));
+        }
+        if params["drop"] == "framed" {
+            let conns: Vec<Arc<Ctx>> = self.core.lock().unwrap().conns.iter().filter_map(Weak::upgrade).collect();
+            for c in conns.into_iter().filter(|c| c.is_framed()) {
+                c.cut();
+            }
+        }
     }
 
     /// Send an event notification to every subscribed connection.
@@ -499,6 +522,10 @@ impl Ctx {
                     for (t, ev) in events {
                         std::thread::sleep(Duration::from_millis(t - at));
                         at = t;
+                        if ev["method"] == "fake" {
+                            me.fx.control(&ev["params"]);
+                            continue;
+                        }
                         if me.send_json(&ev).is_err() {
                             return;
                         }
@@ -522,6 +549,9 @@ impl Ctx {
             return Err(("needs_framed", "terminal.attach needs a framed connection (hello framed:true)".into()));
         }
         let address = Self::address(params);
+        if self.fx.core.lock().unwrap().refuse_attach_until.is_some_and(|t| std::time::Instant::now() < t) {
+            return Err(("busy", "the fake core refuses attaches for now".into()));
+        }
         let mut rec = self.fx.get(address)?;
         if rec["state"] == "finished" {
             return Err(("finished", format!("terminal \"{address}\" has finished")));
@@ -580,6 +610,9 @@ impl Ctx {
                     self.fx.set_size(&terminal, cols as u64, rows as u64);
                 }
             }
+            Some(Kind::Focus) => {
+                self.log(&json!({"frame": "focus", "terminal": terminal, "gained": payload.first() == Some(&1)}));
+            }
             Some(Kind::Credit) => {
                 if let Some(n) = parse_credit(payload) {
                     stream.grant(n);
@@ -592,6 +625,12 @@ impl Ctx {
             }
             _ => {}
         }
+    }
+
+    /// Cut the line: the viewer's reader ends, its streams are lost.
+    fn cut(&self) {
+        *self.writer.lock().unwrap() = Box::new(io::sink());
+        self.detach_all();
     }
 
     fn detach_all(&self) {
@@ -619,6 +658,7 @@ pub fn serve_logged(fx: Arc<Fixture>, reader: Box<dyn Read + Send>, writer: Box<
         next_channel: AtomicU32::new(1),
         to_release: Mutex::default(),
     });
+    ctx.fx.core.lock().unwrap().conns.push(Arc::downgrade(&ctx));
     let mut lines = BufReader::new(reader);
     let mut buf = String::new();
     loop {
@@ -820,9 +860,11 @@ mod tests {
         }
         let lines = log_lines(&log);
         assert_eq!(lines[0]["method"], "terminal.run");
-        assert_eq!(lines[1], json!({"frame": "data", "terminal": "t1", "bytes": "ls\r"}));
-        assert_eq!(lines[2], json!({"frame": "resize", "terminal": "t1", "cols": 120, "rows": 40}));
-        assert_eq!(lines[3], json!({"method": "terminal.kill", "params": {"terminal": "t1"}}));
+        assert_eq!(lines[1]["method"], "terminal.attach");
+        assert_eq!(lines[2], json!({"frame": "data", "terminal": "t1", "bytes": "ls\r"}));
+        assert_eq!(lines[3], json!({"frame": "resize", "terminal": "t1", "cols": 120, "rows": 40}));
+        assert_eq!(lines[4], json!({"frame": "focus", "terminal": "t1", "gained": true}));
+        assert_eq!(lines[5], json!({"method": "terminal.kill", "params": {"terminal": "t1"}}));
         assert_eq!(c.call("terminal.get", json!({"terminal": "t1"}), T).unwrap()["cols"], 120);
     }
 
@@ -837,7 +879,25 @@ mod tests {
             StreamEvent::Close(i) => assert!(i.is_ack()),
             other => panic!("{other:?}"),
         }
-        assert_eq!(log_lines(&log)[0], json!({"frame": "close", "terminal": "t3"}));
+        let lines = log_lines(&log);
+        assert_eq!(lines[0]["method"], "terminal.attach");
+        assert_eq!(lines[1], json!({"frame": "close", "terminal": "t3"}));
+    }
+
+    #[test]
+    fn the_control_event_drops_the_framed_lines_and_can_refuse_attaches() {
+        let (c, fx) = framed(json!({"terminals": [{"address": "t1", "state": "live"}]}), None);
+        let (_, rx) = attach(&c, "t1");
+        assert_eq!(data(&rx, PAINT.len()), PAINT);
+        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 60_000}));
+        assert!(matches!(rx.recv_timeout(T).unwrap(), StreamEvent::Lost));
+        assert!(c.is_closed() || c.call("terminal.get", json!({"terminal": "t1"}), Duration::from_millis(300)).is_err());
+        // A new line is refused while the window lasts, then served.
+        let (c2, fx2) = framed(json!({"terminals": [{"address": "t1", "state": "live"}]}), None);
+        fx2.control(&json!({"refuse_attach_ms": 60_000}));
+        assert_eq!(c2.call("terminal.attach", json!({"terminal": "t1", "resumed": true}), T).unwrap_err().kind(), Some("busy"));
+        fx2.control(&json!({"refuse_attach_ms": 0}));
+        assert!(c2.call("terminal.attach", json!({"terminal": "t1", "resumed": true}), T).is_ok());
     }
 
     #[test]

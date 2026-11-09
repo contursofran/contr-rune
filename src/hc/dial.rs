@@ -7,6 +7,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::fake::{self, Fixture};
 use super::watch::HcStatus;
@@ -70,6 +71,15 @@ impl Dialer {
             return Err(HcStatus::NotInstalled);
         }
         find_hc(hc, path, home).map(|path| Dialer::Command { path }).ok_or(HcStatus::NotInstalled)
+    }
+
+    /// The first and the longest wait before a tab attaches again after a lost line (Contract C2:
+    /// 0.5 s doubled to 5 s). The in-process fake is short, so headless tests need not wait.
+    pub fn backoff(&self) -> (Duration, Duration) {
+        match self {
+            Dialer::Command { .. } => (Duration::from_millis(500), Duration::from_secs(5)),
+            Dialer::Fake(_) => (Duration::from_millis(50), Duration::from_millis(200)),
+        }
     }
 
     /// Open one new line to the core.

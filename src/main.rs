@@ -24,7 +24,7 @@ mod sidebar;
 mod split;
 mod theme;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -38,6 +38,7 @@ use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use find::Find;
 use hc::term::{HcSession, Spec as HcSpec};
+use hc::restore;
 use hc::{Dialer, HcStatus, HcUpdate};
 use pty::Pty;
 use session::{Session, Size, now_ms};
@@ -118,6 +119,8 @@ struct App {
     /// How to reach hc for tabs: set when hc is on and installed (or the fake core is chosen);
     /// `None` means local PTY tabs.
     hc_dialer: Option<Dialer>,
+    /// The tab whose terminal was last told it has the keyboard focus (FOCUS frames).
+    focus_sent: Option<u64>,
 }
 
 fn init() -> App {
@@ -180,6 +183,7 @@ fn init() -> App {
         hc_tx,
         hc_rx,
         hc_dialer,
+        focus_sent: None,
         find: Find::new(),
     }
 }
@@ -192,7 +196,7 @@ impl App {
         // With hc the tab is a terminal in the core; a thread creates it and a failure falls back
         // to a local PTY (see `hc_fallbacks`).
         if let Some(dialer) = self.hc_dialer.clone() {
-            let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone() };
+            let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: None };
             self.next_id += 1;
             self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)) });
             self.select_tab(id);
@@ -206,6 +210,61 @@ impl App {
             }
             Err(e) => self.error = Some(format!("couldn't start a shell: {e}")),
         }
+    }
+
+    /// Reopen the app's live hc terminals as tabs (launch): each in its project, in creation order,
+    /// attached with history. A folder that is no project yet is added when it exists. With nothing
+    /// to reopen (or no answer from hc) one new tab opens, as without hc.
+    fn restore_tabs(&mut self, listed: Result<Vec<hc::wire::Terminal>, String>) {
+        let Some(dialer) = self.hc_dialer.clone() else { return };
+        let terminals = listed.unwrap_or_default();
+        let same = |a: &Path, b: &Path| a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y);
+        let items = {
+            let known: Vec<restore::Known> = self.projects.iter().map(|p| restore::Known { name: &p.name, path: &p.path }).collect();
+            restore::plan(&terminals, &known, &same, &|p| p.is_dir())
+        };
+        let size = self.pane_size[0];
+        let mut opened: Vec<(u64, usize)> = Vec::new();
+        for item in items {
+            let project = match item.target {
+                restore::Target::Project(i) => i,
+                restore::Target::Folder(path) => match self.projects.iter().position(|p| same(&p.path, &path)) {
+                    Some(i) => i,
+                    None => {
+                        self.projects.push(Project { name: sidebar::folder_name(&path), path, last_tab: None });
+                        self.projects.len() - 1
+                    }
+                },
+            };
+            let p = &self.projects[project];
+            let spec = HcSpec { dialer: dialer.clone(), cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: Some(item.address) };
+            let id = self.next_id;
+            self.next_id += 1;
+            self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)) });
+            opened.push((id, project));
+        }
+        // The first tab of the selected project shows; else the first one.
+        match opened.iter().find(|(_, p)| *p == self.selected_project).or(opened.first()) {
+            Some((id, _)) => self.select_tab(*id),
+            None if self.tabs.is_empty() && !self.projects.is_empty() => self.open_tab(0),
+            None => {}
+        }
+    }
+
+    /// Tell the terminals which pane has the keyboard focus: a FOCUS frame when it changes.
+    fn sync_focus(&mut self) {
+        let want = if self.focused { self.pane_tab(self.focus_idx()) } else { None };
+        if want == self.focus_sent {
+            return;
+        }
+        for (id, gained) in [(self.focus_sent, false), (want, true)] {
+            if let Some(id) = id
+                && let Some(t) = self.tabs.iter().find(|t| t.session.id() == id)
+            {
+                t.session.set_focus(gained);
+            }
+        }
+        self.focus_sent = want;
     }
 
     /// Add a folder as a project and select it; a folder that is already a project is just selected.
@@ -495,19 +554,25 @@ fn grid_size(w: f32, h: f32) -> Size {
 
 fn setup(s: &mut App, waker: Waker) {
     s.waker = Some(waker.clone());
-    start_hc(s, waker);
+    start_hc(s, waker.clone());
     if s.tabs.is_empty() && !s.projects.is_empty() {
-        s.open_tab(0);
+        match s.hc_dialer.clone() {
+            // With hc the tabs of the last run come back; the listing decides whether a new one opens.
+            Some(d) if rune::is_headless() => s.restore_tabs(restore::list(&d)),
+            Some(d) => restore::spawn(d, s.hc_tx.clone(), waker),
+            None => s.open_tab(0),
+        }
     }
 }
 
 /// Start the hc watcher for the dialer `init` chose (none: hc is off or not installed). A headless
 /// run never dials a real hc: with `CONTR_HC_FAKE` it checks the fake core at once (a scene cannot
-/// wait for a thread), otherwise hc shows as not installed.
+/// wait for a thread) and only watches events, otherwise hc shows as not installed.
 fn start_hc(s: &mut App, waker: Waker) {
     let Some(d) = s.hc_dialer.clone() else { return };
     if rune::is_headless() {
         s.hc = hc::watch::probe(&d);
+        hc::watch::spawn_events(d, s.hc_tx.clone(), waker);
     } else {
         s.hc = HcStatus::Connecting;
         hc::watch::spawn(d, s.hc_tx.clone(), waker);
@@ -536,13 +601,24 @@ fn hc_fallbacks(s: &mut App) -> bool {
 
 fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
-    while let Ok(HcUpdate::Status(status)) = s.hc_rx.try_recv() {
-        if s.hc != status {
-            s.hc = status;
-            changed = true;
+    while let Ok(update) = s.hc_rx.try_recv() {
+        match update {
+            HcUpdate::Status(status) => {
+                if s.hc != status {
+                    s.hc = status;
+                }
+            }
+            HcUpdate::Event { terminal, kind } => {
+                for t in &s.tabs {
+                    t.session.hc_event(&terminal, kind);
+                }
+            }
+            HcUpdate::Restore(listed) => s.restore_tabs(listed),
         }
+        changed = true;
     }
     changed |= hc_fallbacks(s);
+    s.sync_focus();
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
     let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited().load(Ordering::Acquire)).map(|t| t.session.id()).collect();
     for id in exited {
@@ -898,7 +974,15 @@ fn terminal_panel(k: &Kit, s: &App) -> El {
         None => shell::terminal_panel(k).child(pane(k, s, 0, t.session.id(), false)),
         Some(sp) => shell::terminal_panel(k).child(split_row(k, s, sp)),
     };
-    if s.find.open { panel.child(find_bar(k, s, total)) } else { panel }
+    let panel = if s.find.open { panel.child(find_bar(k, s, total)) } else { panel };
+    // An hc tab whose line is lost and attaching again: a quiet line at the bottom right.
+    let detached = (0..2).filter_map(|i| s.pane_tab(i)).any(|id| s.tabs.iter().any(|t| t.session.id() == id && t.session.detached()));
+    if detached { panel.child(reconnecting(k)) } else { panel }
+}
+
+/// The small "reconnecting" line over the terminal while an hc tab attaches again. Key `hc-banner`.
+fn reconnecting(k: &Kit) -> El {
+    text("reconnecting…").key("hc-banner").role("status").font(k.ty.text_small).color(k.c.text_faint).pin(None, Some(14.0), Some(10.0), None)
 }
 
 /// The number of find matches in the focused terminal.
