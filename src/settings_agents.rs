@@ -6,13 +6,13 @@
 //! suggestion; a pick or the Set button creates it.
 //!
 //! Keys: `role/<profile>/cli|model|effort|argv`, `role/<profile>/set` (a missing profile),
-//! `roles/error`.
+//! `roles/error`. The Flow section (`flow_section`) follows the Roles.
 
 use rune::{El, col, el, row, spacer, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, Select, SelectAppearance};
 
 use crate::App;
-use crate::agents_config::{Config, Profile, flag_value};
+use crate::agents_config::{Config, Flow, Profile, flag_value};
 
 /// The profiles the tab edits, in order.
 const ROLES: [&str; 5] = ["orchestrator", "planner", "builder", "reviewer", "debugger"];
@@ -129,6 +129,7 @@ pub struct Roles {
     cfg: Config,
     open: Option<(usize, Field)>,
     error: Option<String>,
+    flow_error: Option<String>,
 }
 
 impl Roles {
@@ -155,6 +156,28 @@ impl Roles {
                 self.error = None;
             }
             Err(e) => self.error = Some(e),
+        }
+    }
+
+    pub fn flow(&self) -> &Flow {
+        &self.cfg.flow
+    }
+
+    pub fn flow_error(&self) -> Option<&str> {
+        self.flow_error.as_deref()
+    }
+
+    /// Save `flow` (C8); the shown flow changes only when the save works.
+    pub fn set_flow(&mut self, flow: Flow) {
+        let Some(path) = crate::paths::agents_config() else { return };
+        let mut next = self.cfg.clone();
+        next.flow = flow;
+        match next.save(&path) {
+            Ok(()) => {
+                self.cfg = next;
+                self.flow_error = None;
+            }
+            Err(e) => self.flow_error = Some(e),
         }
     }
 
@@ -217,7 +240,7 @@ pub fn build(k: &Kit, s: &App, popups: &mut Vec<El>) -> El {
     if let Some(e) = &s.roles.error {
         body = body.child(text(e.clone()).key("roles/error").font(k.ty.text_small).color(c.danger.fg).wrap());
     }
-    body
+    body.child(crate::flow_section::build(k, s))
 }
 
 #[cfg(test)]
