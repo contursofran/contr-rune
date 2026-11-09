@@ -19,6 +19,10 @@ match the "contr · from zero" design.
   pattern from zero. Start points: `hello` (headless `--snap`/`--scene`), `kit-gallery` (rune-kit widgets),
   `settings` and `cursed-settings` (rows, toggles), `glass-panel`, `glass-card` and `frosted-bar` (glass),
   `overlay` (floating parts), `shapes` and `sketch` (paths and icons), `todo` (lists and input).
+- Rust style: before you write or change Rust, read the `rust-best-practices` skill
+  (`~/.claude/skills/rust-best-practices/SKILL.md`, and its `references/` when a topic needs depth) and follow it.
+  Before you open a PR, check your diff against the `rust-review` skill (`~/.claude/skills/rust-review/SKILL.md`)
+  and fix what it finds. Install both with `npx skills add morganlinton/BeautifulRust -g -a claude-code`.
 
 ## Design source
 
