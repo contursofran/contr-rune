@@ -31,6 +31,7 @@ mod pty;
 mod select;
 mod session;
 mod session_file;
+mod session_panel;
 mod settings;
 mod settings_agents;
 mod shell;
@@ -183,6 +184,7 @@ struct App {
     /// Claude and Codex plan meters in the sidebar foot (H11).
     plans: usage::Plans,
     context: usage::ContextCache,
+    session: session_panel::SessionCache,
     /// The terminal text selection (T1).
     select: select::Select,
     /// The update check, pill and toast (R3a).
@@ -284,6 +286,7 @@ fn init() -> App {
         card: notch::Card::default(),
         plans: usage::Plans::new(),
         context: usage::ContextCache::default(),
+        session: session_panel::SessionCache::default(),
         select: select::Select::default(),
         update: update::Updater::new(),
         outline: outline::State::default(),
@@ -948,6 +951,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
     changed |= s.gh.poll(&s.agents, s.focused, s.waker.as_ref());
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
     changed |= s.context.poll(s.selected_agent.as_deref(), s.focused, tx);
+    changed |= s.session.poll(s.selected_agent.as_deref(), s.focused, s.waker.as_ref(), tx);
     changed |= s.update.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
     s.sync_outline();

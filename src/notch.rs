@@ -195,7 +195,7 @@ pub fn classify_ref(r: &str, repo: Option<&str>) -> Ref {
 
 /// Open `url` in the browser. With `CONTR_OPEN_LOG` set (tests) the URL is appended to that
 /// file instead, so no run opens a browser.
-fn open_link(tx: &mut Tx, url: &str) {
+pub(crate) fn open_link(tx: &mut Tx, url: &str) {
     if let Some(log) = std::env::var_os("CONTR_OPEN_LOG") {
         use std::io::Write;
         let file = std::fs::OpenOptions::new().append(true).create(true).open(log);

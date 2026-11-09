@@ -69,3 +69,16 @@ fn the_controls_write_one_value_and_the_steppers_stop_at_1() {
     assert!(!on(&t, "flow-presets", 0) && !on(&t, "flow-presets", 1) && !on(&t, "flow-presets", 2));
     assert!(!t.has("flow/error"));
 }
+
+#[test]
+fn a_file_with_a_bad_flow_shows_the_error_and_an_edit_does_not_overwrite_it() {
+    let bad = r#"{"flow":{"workers":0,"merge":"auto"},"theme":{"accent":"blue"}}"#;
+    let t = App::new()
+        .scene("three-tabs")
+        .file("CONTR_AGENTS_CONFIG", "agents.json", bad)
+        .events(vec![tap(0.3, GEAR), tap(0.6, AGENTS), tap(0.9, "flow-merge/segment0")])
+        .end(1.5)
+        .run();
+    assert!(t.has("flow/error") && t.has("roles/error"));
+    assert_eq!(t.file("agents.json"), bad);
+}

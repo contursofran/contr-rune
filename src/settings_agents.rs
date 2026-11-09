@@ -130,6 +130,9 @@ pub struct Roles {
     open: Option<(usize, Field)>,
     error: Option<String>,
     flow_error: Option<String>,
+    /// Why `agents.json` did not load. The config shown is then the defaults, so no edit is saved
+    /// until the file is fixed and the tab opens again.
+    load_error: Option<String>,
 }
 
 impl Roles {
@@ -139,7 +142,11 @@ impl Roles {
         if let Some(path) = crate::paths::agents_config() {
             match Config::load(&path) {
                 Ok(c) => r.cfg = c,
-                Err(e) => r.error = Some(e),
+                Err(e) => {
+                    r.error = Some(e.clone());
+                    r.flow_error = Some(e.clone());
+                    r.load_error = Some(e);
+                }
             }
         }
         r
@@ -147,6 +154,10 @@ impl Roles {
 
     /// Save the new profile of `role`; the shown config changes only when the save works.
     fn put(&mut self, role: usize, p: Profile) {
+        if let Some(e) = &self.load_error {
+            self.error = Some(e.clone());
+            return;
+        }
         let Some(path) = crate::paths::agents_config() else { return };
         let mut next = self.cfg.clone();
         next.profiles.insert(ROLES[role].to_owned(), p);
@@ -169,6 +180,10 @@ impl Roles {
 
     /// Save `flow` (C8); the shown flow changes only when the save works.
     pub fn set_flow(&mut self, flow: Flow) {
+        if let Some(e) = &self.load_error {
+            self.flow_error = Some(e.clone());
+            return;
+        }
         let Some(path) = crate::paths::agents_config() else { return };
         let mut next = self.cfg.clone();
         next.flow = flow;
