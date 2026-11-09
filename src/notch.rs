@@ -2,11 +2,13 @@
 //! and counts what waits for the owner: blocked agents, open questions and open to-dos of the
 //! selected project. Pressing it (or ⌘J) drops a card with one tab per item. A question shows its
 //! options (the recommended one first), an input for a typed answer and a Send button; a to-do has
-//! Done; a blocked agent has a button that opens its terminal.
+//! Done; a blocked agent shows the menu read from its screen (detail, question, numbered choices;
+//! a digit or a click sends the choice) and a button that opens its terminal.
 //!
 //! Elements: `notch` (and `notch/label`), `qcard`, `qcard/tabs`, `qcard/item/<ID>`,
 //! `qcard/option/<ID>/<i>` (`i` counts the options as shown, the recommended one is 0),
-//! `qcard/input`, `qcard/send`, `qcard/done/<ID>`, `qcard/open/<address>`, `qcard/error`.
+//! `qcard/input`, `qcard/send`, `qcard/done/<ID>`, `qcard/open/<address>`, `qcard/error`, `qcard/prompt/<address>` (with `/detail` and `/question`),
+//! `qcard/choice/<address>/<n>` (`n` from 1).
 //!
 //! Answering writes `owner.json` first, then tells the question's coordinator terminal
 //! (`Owner answered D7: <answer>`). A failed send leaves the answer saved and shows the error.
@@ -17,10 +19,18 @@ use rune_kit::{
 };
 
 use crate::App;
+use crate::agents::Worker;
 use crate::hc::model::AgentState;
 use crate::hc::owner::{Question, Todo};
 use crate::hc::{HcUpdate, watch};
+use crate::prompt::{self, Prompt};
 use crate::theme::{NOTCH_HEIGHT, NOTCH_OPEN_WIDTH};
+
+/// How many terminal lines the card reads to find a blocked agent's menu.
+const PROMPT_LINES: u32 = 40;
+
+/// Shown when the menu changed between the owner looking and choosing; nothing was sent.
+const PROMPT_CHANGED: &str = "The prompt changed; look again.";
 
 /// Longest tab label before it is cut.
 const TAB_MAX_CHARS: usize = 16;
@@ -79,6 +89,20 @@ pub struct Card {
     pub pick: Option<String>,
     pub edit: TextEdit,
     pub error: Option<String>,
+    /// The menu read from the shown blocked agent's screen (A2).
+    pub menu: Option<Menu>,
+    /// A choice is on its way to the agent.
+    pub busy: bool,
+}
+
+/// What the card knows of a blocked agent's screen.
+#[derive(Debug)]
+pub struct Menu {
+    pub address: String,
+    /// The agent's turn and message when the screen was read; a new stamp reads it again.
+    pub stamp: String,
+    /// `None` while unread or when the screen has no form we know.
+    pub prompt: Option<Prompt>,
 }
 
 impl Card {
@@ -176,12 +200,14 @@ impl App {
                 open: true,
                 ..Card::default()
             };
+            self.sync_menu();
         }
     }
 
     pub fn close_card(&mut self) {
         self.card.open = false;
         self.card.error = None;
+        self.card.menu = None;
         self.card.reset_answer();
     }
 
@@ -195,6 +221,169 @@ impl App {
         self.card.tab = i;
         self.card.error = None;
         self.card.reset_answer();
+        self.sync_menu();
+    }
+
+    /// The blocked agent `address` as the core lists it now.
+    fn blocked_worker(&self, address: &str) -> Option<Worker> {
+        let t = self.hc_terminals.iter().find(|t| t.address == address)?;
+        Some(Worker::from(t)).filter(|w| w.status == "blocked")
+    }
+
+    /// The menu on `screen` of blocked agent `address`.
+    fn menu_of(&self, address: &str, screen: &str) -> Option<Prompt> {
+        let w = self.blocked_worker(address)?;
+        prompt::parse(&w.command, &w.kind, screen)
+    }
+
+    /// Read the shown blocked agent's screen when its turn or message is not the one last read
+    /// (the agent's `status` and `turn` events reach here through the terminal list). The old menu
+    /// stays until the new read lands.
+    pub fn sync_menu(&mut self) {
+        if !self.card.open {
+            return;
+        }
+        let Some(Item::Blocked { address, .. }) = self.shown_item() else {
+            return;
+        };
+        let Some(w) = self.blocked_worker(&address) else {
+            return;
+        };
+        let stamp = format!("{}|{}", w.turn, w.msg);
+        if self
+            .card
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.address == address && m.stamp == stamp)
+        {
+            return;
+        }
+        let Some(dialer) = self.hc_dialer.clone() else {
+            return;
+        };
+        let kept = self
+            .card
+            .menu
+            .take()
+            .filter(|m| m.address == address)
+            .and_then(|m| m.prompt);
+        self.card.menu = Some(Menu {
+            address: address.clone(),
+            stamp: stamp.clone(),
+            prompt: kept,
+        });
+        self.run_hc(move || HcUpdate::Menu {
+            screen: watch::read_screen(&dialer, &address, PROMPT_LINES),
+            address,
+            stamp,
+        });
+    }
+
+    /// A digit key or a click on choice `n` (from 0) of the shown blocked agent's menu. A choice
+    /// that asks for typed text opens the agent's terminal instead. Otherwise the screen is read
+    /// again and the key goes only when the menu is the one the owner saw.
+    pub fn choose(&mut self, n: usize) {
+        let Some(Item::Blocked { address, .. }) = self.shown_item() else {
+            return;
+        };
+        let Some(seen) = self
+            .card
+            .menu
+            .as_ref()
+            .filter(|m| m.address == address)
+            .and_then(|m| m.prompt.clone())
+        else {
+            return;
+        };
+        let Some(choice) = seen.choices.get(n) else {
+            return;
+        };
+        if choice.text {
+            self.open_blocked(&address);
+            return;
+        }
+        let (Some(w), Some(dialer)) = (self.blocked_worker(&address), self.hc_dialer.clone())
+        else {
+            return;
+        };
+        if self.card.busy {
+            return;
+        }
+        self.card.busy = true;
+        self.card.error = None;
+        self.run_hc(move || {
+            let result = watch::read_screen(&dialer, &address, PROMPT_LINES).and_then(|screen| {
+                if prompt::parse(&w.command, &w.kind, &screen).as_ref() != Some(&seen) {
+                    return Ok(Some(screen));
+                }
+                watch::press_keys(&dialer, &address, &[(n + 1).to_string()]).map(|()| None)
+            });
+            HcUpdate::Chose { address, result }
+        });
+    }
+
+    /// Run `job` off the UI thread and deliver its update; a headless run cannot wait for a
+    /// thread, so it runs at once.
+    fn run_hc(&mut self, job: impl FnOnce() -> HcUpdate + Send + 'static) {
+        if rune::is_headless() {
+            let update = job();
+            self.card_update(update);
+            return;
+        }
+        let (tx, waker) = (self.hc_tx.clone(), self.waker.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(job());
+            if let Some(w) = &waker {
+                w();
+            }
+        });
+    }
+
+    /// A read or a choice finished.
+    pub fn card_update(&mut self, update: HcUpdate) {
+        match update {
+            HcUpdate::Menu {
+                address,
+                stamp,
+                screen,
+            } => {
+                let current = self
+                    .card
+                    .menu
+                    .as_ref()
+                    .is_some_and(|m| m.address == address && m.stamp == stamp);
+                if !current {
+                    return;
+                }
+                match screen {
+                    Ok(screen) => self.set_prompt(&address, &screen),
+                    Err(e) => self.card.error = Some(e),
+                }
+            }
+            HcUpdate::Chose { address, result } => {
+                self.card.busy = false;
+                let shown = matches!(self.shown_item(), Some(Item::Blocked { address: a, .. }) if a == address);
+                if !shown {
+                    return;
+                }
+                match result {
+                    Ok(None) => {}
+                    Ok(Some(screen)) => {
+                        self.card.error = Some(PROMPT_CHANGED.to_owned());
+                        self.set_prompt(&address, &screen);
+                    }
+                    Err(e) => self.card.error = Some(e),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn set_prompt(&mut self, address: &str, screen: &str) {
+        let prompt = self.menu_of(address, screen);
+        if let Some(m) = &mut self.card.menu {
+            m.prompt = prompt;
+        }
     }
 
     /// Pick the `n`-th shown option (0 is the first) of the shown question.
@@ -304,7 +493,10 @@ pub fn key(s: &mut App, ev: &KeyEvent) -> bool {
         Key::Enter => s.send_answer(),
         Key::Text(t) if !typing && !ev.mods.cmd && !ev.mods.ctrl => {
             match t.parse::<usize>().ok().filter(|d| (1..=9).contains(d)) {
-                Some(d) => s.pick_option(d - 1),
+                Some(d) => {
+                    s.pick_option(d - 1);
+                    s.choose(d - 1);
+                }
                 None => return false,
             }
         }
@@ -388,12 +580,24 @@ pub fn card(k: &Kit, s: &App, layer: &mut Vec<El>) {
     let hint = {
         let options = match items.get(tab) {
             Some(Item::Question(q)) => q.options.len().min(9),
+            Some(Item::Blocked { address, .. }) => s
+                .card
+                .menu
+                .as_ref()
+                .filter(|m| &m.address == address)
+                .and_then(|m| m.prompt.as_ref())
+                .map_or(0, |p| p.choices.len()),
             _ => 0,
+        };
+        let verb = if matches!(items.get(tab), Some(Item::Blocked { .. })) {
+            "send"
+        } else {
+            "pick"
         };
         let pick = match options {
             0 => String::new(),
-            1 => "1 pick  ".to_owned(),
-            n => format!("1-{n} pick  "),
+            1 => format!("1 {verb}  "),
+            n => format!("1-{n} {verb}  "),
         };
         format!("{pick}\u{23ce} next  esc close")
     };
@@ -426,6 +630,53 @@ pub fn card(k: &Kit, s: &App, layer: &mut Vec<El>) {
     ));
 }
 
+/// A blocked agent's menu: the detail, the question and a button per choice.
+fn menu_view(k: &Kit, address: &str, p: &Prompt) -> El {
+    let c = &k.c;
+    let mut view = col()
+        .key(format!("qcard/prompt/{address}"))
+        .w_full()
+        .gap(10.0);
+    if !p.detail.is_empty() {
+        view = view.child(
+            text(p.detail.join("\n"))
+                .key(format!("qcard/prompt/{address}/detail"))
+                .font(k.ty.text_small)
+                .color(c.text_faint)
+                .w_full(),
+        );
+    }
+    if !p.question.is_empty() {
+        view = view.child(
+            text(p.question.clone())
+                .key(format!("qcard/prompt/{address}/question"))
+                .font(k.ty.ui)
+                .color(c.text_strong)
+                .w_full(),
+        );
+    }
+    for (i, choice) in p.choices.iter().enumerate() {
+        let (number, label) = (i + 1, choice.label.clone());
+        view = view.child(
+            Button::new(&choice.label)
+                .variant(ButtonVariant::Outline)
+                .label_with(move |font, ink| {
+                    row()
+                        .gap(8.0)
+                        .center_y()
+                        .w_full()
+                        .child(text(number.to_string()).font(font).color(ink))
+                        .child(text(label).font(font).color(ink))
+                })
+                .on_press(move |s: &mut App| s.choose(i))
+                .build(k)
+                .w_full()
+                .key(format!("qcard/choice/{address}/{number}")),
+        );
+    }
+    view
+}
+
 fn item_view(k: &Kit, s: &App, item: &Item) -> El {
     let c = &k.c;
     let heading = |meta: String| {
@@ -446,13 +697,21 @@ fn item_view(k: &Kit, s: &App, item: &Item) -> El {
         .gap(10.0);
     match item {
         Item::Blocked { address, name, msg } => {
-            view = view
-                .child(heading(format!("{name} is blocked")))
-                .child(body_text(if msg.is_empty() {
+            view = view.child(heading(format!("{name} is blocked")));
+            let menu = s
+                .card
+                .menu
+                .as_ref()
+                .filter(|m| &m.address == address)
+                .and_then(|m| m.prompt.as_ref());
+            view = match menu {
+                Some(p) => view.child(menu_view(k, address, p)),
+                None => view.child(body_text(if msg.is_empty() {
                     "It waits for you."
                 } else {
                     msg
-                }));
+                })),
+            };
             let address = address.clone();
             view = view.child(
                 row().child(
