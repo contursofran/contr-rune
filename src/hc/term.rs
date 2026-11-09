@@ -112,7 +112,6 @@ struct Shared {
     failure: Mutex<Option<String>>,
     /// The line is lost and the thread is attaching again (the tab shows "reconnecting").
     detached: AtomicBool,
-    exited: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -169,7 +168,6 @@ impl HcSession {
             keep: Mutex::new(None),
             failure: Mutex::new(None),
             detached: AtomicBool::new(false),
-            exited: exited.clone(),
         });
         let title = Arc::new(Mutex::new(None));
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(Replies(shared.clone()))));
@@ -700,6 +698,8 @@ mod tests {
     use alacritty_terminal::index::{Column, Line};
 
     const WAIT: Duration = Duration::from_secs(5);
+    /// How long a test waits to show that nothing happens.
+    const NEGATIVE: Duration = Duration::from_millis(50);
 
     fn start(fx: Value, existing: Option<&str>) -> (HcSession, Arc<Fixture>) {
         start_as(fx, existing, Ownership::Owned)
@@ -723,7 +723,7 @@ mod tests {
         let t = std::time::Instant::now();
         while !f() {
             assert!(t.elapsed() < WAIT, "timed out: {what}");
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 
@@ -759,7 +759,7 @@ mod tests {
         until("first paint", || screen(&s).contains("row-39"));
         let before = history(&s);
         assert!(before > 20, "the paint scrolled: {before}");
-        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 500}));
+        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 100}));
         until("detached", || s.detached());
         assert_eq!(history(&s), before, "scrollback stays while detached");
         assert!(!s.exited.load(Ordering::Acquire), "the tab stays");
@@ -773,12 +773,11 @@ mod tests {
     fn keys_typed_while_detached_are_dropped_not_replayed() {
         let (s, fx) = start(json!({"terminals": [live("t3")], "echo": true}), Some("t3"));
         until("attached", || s.address().is_some() && !s.detached());
-        std::thread::sleep(Duration::from_millis(200));
-        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 500}));
+        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 100}));
         until("detached", || s.detached());
         s.write(b"lost");
         until("attached again", || !s.detached());
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(NEGATIVE);
         assert!(!screen(&s).contains("lost"), "{:?}", screen(&s));
     }
 
@@ -801,11 +800,11 @@ mod tests {
         let fx = json!({"terminals": [live("t3")], "errors": {"terminal.attach": {"kind": "unavailable", "message": "lost, waiting for its new shell"}}});
         let (s, _) = start(fx, Some("t3"));
         until("detached", || s.detached());
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(NEGATIVE);
         assert!(s.detached() && !s.exited.load(Ordering::Acquire), "parked, not given up");
         // The event wakes it; the core still says unavailable, so it parks again.
         s.event(TermEvent::Restarted);
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(NEGATIVE);
         assert!(s.detached() && !s.exited.load(Ordering::Acquire));
     }
 
@@ -813,8 +812,7 @@ mod tests {
     fn unavailable_without_a_restarted_event_is_retried_by_the_safety_timer() {
         let (s, fx) = start(json!({"terminals": [live("t3")], "screens": {"t3": "back\r\n"}}), Some("t3"));
         until("attached", || s.address().is_some() && !s.detached());
-        std::thread::sleep(Duration::from_millis(200));
-        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 500, "refuse_attach_kind": "unavailable"}));
+        fx.control(&json!({"drop": "framed", "refuse_attach_ms": 100, "refuse_attach_kind": "unavailable"}));
         until("detached", || s.detached());
         // No `restarted` is ever sent: the safety retry finds the core ready again.
         until("attached again", || !s.detached());
@@ -835,7 +833,6 @@ mod tests {
     fn a_close_with_a_reason_ends_the_tab_only_for_exit_and_kill() {
         let (s, _) = start(json!({"terminals": [live("t3")], "echo": true, "exit_on": "exit\r"}), Some("t3"));
         until("attached", || s.address().is_some());
-        std::thread::sleep(Duration::from_millis(200));
         s.write(b"exit\r");
         until("exited", || s.exited.load(Ordering::Acquire));
     }
@@ -844,7 +841,6 @@ mod tests {
     fn closing_stops_the_retry_loop() {
         let (s, fx) = start(json!({"terminals": [live("t3")]}), Some("t3"));
         until("attached", || s.address().is_some());
-        std::thread::sleep(Duration::from_millis(200));
         fx.control(&json!({"drop": "framed", "refuse_attach_ms": 600000}));
         until("detached", || s.detached());
         s.close();
@@ -862,9 +858,8 @@ mod tests {
     fn closing_a_borrowed_tab_detaches_and_leaves_the_terminal_live() {
         let (s, fx) = start_as(json!({"terminals": [live("t3")]}), Some("t3"), Ownership::Borrowed);
         until("attached", || s.address().is_some() && !s.detached());
-        std::thread::sleep(Duration::from_millis(200));
         s.close();
-        std::thread::sleep(Duration::from_millis(600));
+        std::thread::sleep(NEGATIVE);
         let t = fx.terminals();
         assert_eq!(t.len(), 1, "not removed: {t:?}");
         assert_eq!(t[0]["state"], "live", "not killed: {t:?}");

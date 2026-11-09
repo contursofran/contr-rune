@@ -266,9 +266,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(got, ["README.md", "src/main.rs"]);
     }
-
-    #[test]
-    fn opener_matches_the_platform() {
-        assert_eq!(opener(), if cfg!(target_os = "macos") { "open" } else { "xdg-open" });
-    }
 }

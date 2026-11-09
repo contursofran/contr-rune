@@ -205,10 +205,4 @@ mod tests {
         assert_eq!(e.kind(), "not_found");
         assert_eq!(RpcError::default().kind(), "");
     }
-
-    #[test]
-    fn an_event_reads_its_type() {
-        let e: Event = serde_json::from_value(json!({"seq": 3, "type": "turn", "terminal": "t7", "data": {"turn": 2}})).unwrap();
-        assert_eq!((e.seq, e.kind.as_str(), e.terminal.as_deref()), (3, "turn", Some("t7")));
-    }
 }

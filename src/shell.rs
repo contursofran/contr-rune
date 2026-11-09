@@ -46,7 +46,6 @@ pub fn titlebar(k: &Kit, leading: El, tabs: El, trailing: Vec<El>) -> El {
     bar.build(k)
 }
 
-#[allow(dead_code)] // the example draws its own lights
 /// A blank leading area where the native traffic lights sit.
 pub fn lights_gap() -> El {
     el().w(LIGHTS_WIDTH).h(12.0)

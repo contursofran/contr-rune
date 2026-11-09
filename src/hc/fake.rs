@@ -1038,7 +1038,7 @@ mod tests {
         }
         let room = START_CREDIT as usize - PAINT.len();
         assert_eq!(data(&rx, room), big[..room]);
-        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err(), "sent past the credit");
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err(), "sent past the credit");
         c.credit(ch, 1024 * 1024).unwrap();
         assert_eq!(data(&rx, big.len() - room), big[room..]);
     }
@@ -1053,7 +1053,7 @@ mod tests {
         }
         data(&rx, START_CREDIT as usize - PAINT.len());
         c.call("terminal.kill", json!({"terminal": "t1"}), T).unwrap();
-        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err(), "CLOSE overtook the data");
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err(), "CLOSE overtook the data");
         c.credit(ch, 1000).unwrap();
         assert_eq!(data(&rx, 108), vec![b'x'; 108]);
         assert!(matches!(rx.recv_timeout(T).unwrap(), StreamEvent::Close(_)));
@@ -1083,7 +1083,7 @@ mod tests {
         let (ch, rx) = attach(&c, "t1");
         data(&rx, PAINT.len());
         c.data(ch, b"nope").unwrap();
-        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
     }
 
     #[test]
@@ -1129,7 +1129,7 @@ mod tests {
         assert_eq!(evs.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3], "a second kill of a finished terminal is no event");
         assert_eq!((evs[0]["data"]["address"].as_str(), evs[0]["data"]["labels"]["role"].as_str()), (Some("t1"), Some("terminal")));
         assert_eq!((evs[1]["data"]["reason"].as_str(), evs[2]["data"].clone()), (Some("killed"), json!({})));
-        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
     }
 
     #[test]

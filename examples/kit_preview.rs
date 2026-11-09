@@ -13,10 +13,18 @@
 
 #[path = "kit_preview_tokens/colors.rs"]
 mod colors;
+// The example shares these files with the app and uses only part of them.
+#[allow(dead_code)]
 #[path = "../src/shell.rs"]
 mod shell;
+#[allow(dead_code)]
 #[path = "../src/theme.rs"]
 mod theme;
+
+// Type styles only this example uses.
+const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(17.0);
+const LABEL: TextStyle = TextStyle::new(12.0, 500.0).lh(18.0);
+const COUNT: TextStyle = TextStyle::new(11.0, 500.0).mono().lh(14.0);
 
 use rune::{AppSpec, Color, Cx, El, Icon, TextStyle, col, el, icon, row, spacer, text};
 use rune_kit::shell::{TabDragState, TabItem, TabOrientation, TabOverflow, TabStrip};
@@ -139,10 +147,10 @@ fn contr_kit() -> Kit {
     k.ty.ui = theme::ROW_SMALL;
     k.ty.ui_medium = TextStyle { weight: 500.0, ..theme::ROW_SMALL };
     k.ty.ui_compact = theme::ROW_SMALL;
-    k.ty.small = theme::SMALL;
-    k.ty.small_medium = theme::LABEL;
-    k.ty.text_xsmall = theme::SMALL;
-    k.ty.text_xsmall_medium = theme::LABEL;
+    k.ty.small = SMALL;
+    k.ty.small_medium = LABEL;
+    k.ty.text_xsmall = SMALL;
+    k.ty.text_xsmall_medium = LABEL;
     k.ty.mono = theme::META;
     k.radius = rune_kit::Radius { xs: 4.0, sm: 6.0, md: 8.0, lg: 12.0, xl: 14.0 };
     k
@@ -318,7 +326,7 @@ fn terminal(k: &Kit) -> El {
     let rail = col()
         .items_end()
         .gap(9.0)
-        .child(text("3").font(theme::COUNT).color(t.ink_100))
+        .child(text("3").font(COUNT).color(t.ink_100))
         .children([8.0, 12.0, 8.0, 14.0].map(|w| tick(w, false)))
         .children([10.0, 12.0, 8.0].map(|w| tick(w, true)));
     shell::terminal_panel(k)
