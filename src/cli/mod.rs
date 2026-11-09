@@ -6,6 +6,7 @@ mod hook;
 mod mcp;
 mod mcp_tools;
 mod owner;
+mod restore;
 mod statusline;
 mod turn;
 
@@ -44,7 +45,7 @@ fn dispatch(args: &[String], out: &mut impl std::io::Write, err: &mut impl std::
     match args[0].as_str() {
         "agents" => agents::run(&args[1..], &agents::Env::real(), out, err),
         "owner" => owner::run(&args[1..], &owner::Env::real(), out, err),
-        "hook" => hook::run(&args[1..], &hook::Env::real(), std::io::stdin(), err),
+        "hook" => hook::run(&args[1..], &hook::Env::real(), std::io::stdin(), out, err),
         "mcp" => mcp_tools::run(std::io::stdin().lock(), out, err),
         "statusline" => statusline::run(&args[1..], &statusline::Env::real(), std::io::stdin().lock(), out, err),
         "help" => {

@@ -1,8 +1,10 @@
-//! `contr-rune hook stop` (PARITY-PLAN D5; Go: cmd/contr/hook.go). The kit's Stop hook: Claude Code
-//! gives the hook input as one JSON value on stdin. In a worker (`CONTR_COORDINATOR` set) a turn
-//! that sent no report gets one sent to the coordinator; in any hc session the terminal gets the
-//! `contr.model` and `contr.effort` labels (D189). It never exits 2: for a Stop hook that blocks
-//! the turn.
+//! `contr-rune hook stop` and `hook session-start` (PARITY-PLAN D5, D6; Go: cmd/contr/hook.go).
+//! Claude Code gives the hook input as one JSON value on stdin. Stop, in a worker
+//! (`CONTR_COORDINATOR` set): a turn that sent no report gets one sent to the coordinator; in any
+//! hc session the terminal gets the `contr.model` and `contr.effort` labels (D189); in a
+//! coordinator past `CONTR_SAVE_AT` tokens the turn is kept once to save `COORDINATOR-STATE.md`.
+//! session-start, after a compaction in a coordinator, prints what it needs to carry on. It never
+//! exits 2: for a Stop hook that blocks the turn.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -11,13 +13,15 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::turn;
+use super::{restore, turn};
 use crate::agents;
 use crate::hc::conn::Conn;
+use crate::hc::owner::OwnerFile;
 
 const USAGE: &str = "\
 Usage:
   contr-rune hook stop            the kit's Stop hook
+  contr-rune hook session-start   the kit's SessionStart hook (matcher compact)
 
 Claude Code runs it and gives it the hook input on stdin.
 
@@ -25,6 +29,15 @@ stop, in a worker (CONTR_COORDINATOR is set): a turn that sent no report with hc
 gets one, \"ended its turn without a report. Last words: ...\", sent to the coordinator.
 In any hc session it also labels the terminal with the model and effort (contr.model,
 contr.effort) for the sidebar row. It never stops the turn.
+
+stop, in a coordinator (a session that ran /contr:orchestrate, or an hc terminal with role
+orchestrator): once the context passes CONTR_SAVE_AT tokens (default 220000), it keeps the turn
+going one time and asks the coordinator to update COORDINATOR-STATE.md before Claude Code
+compacts.
+
+session-start, after a compaction in a coordinator: prints the playbook, the state file to
+read, the live workers it started, its open owner items and the flow (contr-rune agents flow),
+which Claude Code adds to the new context.
 ";
 
 /// The most characters of the worker's last words in a report.
@@ -42,21 +55,23 @@ pub struct Env {
     pub terminal_id: String,
     /// `CLAUDE_EFFORT`.
     pub effort: String,
+    pub restore: restore::Env,
 }
 
 impl Env {
     pub fn real() -> Env {
         let var = |k: &str| std::env::var(k).unwrap_or_default();
-        Env { coordinator: var("CONTR_COORDINATOR"), terminal_id: var("HC_TERMINAL_ID"), effort: var("CLAUDE_EFFORT") }
+        Env { coordinator: var("CONTR_COORDINATOR"), terminal_id: var("HC_TERMINAL_ID"), effort: var("CLAUDE_EFFORT"), restore: restore::Env::real() }
     }
 }
 
 /// `contr-rune hook <kind>`. Exit 0 when done or nothing to do, 1 on an error (usage included);
 /// never 2.
-pub fn run(args: &[String], env: &Env, stdin: impl Read + Send + 'static, err: &mut impl Write) -> i32 {
+pub fn run(args: &[String], env: &Env, stdin: impl Read + Send + 'static, out: &mut impl Write, err: &mut impl Write) -> i32 {
     match args {
-        [kind] if kind == "stop" => stop(env, stdin, err),
-        [kind] if ["session-start", "post-tool", "prompt"].contains(&kind.as_str()) => {
+        [kind] if kind == "stop" => stop(env, stdin, out, err),
+        [kind] if kind == "session-start" => session_start(env, stdin, out, err),
+        [kind] if ["post-tool", "prompt"].contains(&kind.as_str()) => {
             let _ = writeln!(err, "contr-rune hook {kind}: not built yet");
             1
         }
@@ -67,7 +82,7 @@ pub fn run(args: &[String], env: &Env, stdin: impl Read + Send + 'static, err: &
     }
 }
 
-fn stop(env: &Env, stdin: impl Read + Send + 'static, err: &mut impl Write) -> i32 {
+fn stop(env: &Env, stdin: impl Read + Send + 'static, out: &mut impl Write, err: &mut impl Write) -> i32 {
     // Outside hc there are no workers and no sessions to label.
     if env.coordinator.is_empty() && env.terminal_id.is_empty() {
         return 0;
@@ -83,7 +98,9 @@ fn stop(env: &Env, stdin: impl Read + Send + 'static, err: &mut impl Write) -> i
     // The report is the work; the labels are best effort and never fail the hook.
     let report = if env.coordinator.is_empty() { Ok(None) } else { missed_turn(&input, transcript) };
     let labels = labels(&input, transcript, env);
-    if report.as_ref().is_ok_and(Option::is_none) && labels.is_empty() {
+    // A coordinator past the save size: the tokens, else nothing to ask.
+    let ask = if env.coordinator.is_empty() { save_request(&input, transcript, &env.restore) } else { Ok(None) };
+    if report.as_ref().is_ok_and(Option::is_none) && labels.is_empty() && ask.as_ref().is_ok_and(Option::is_none) {
         return 0;
     }
     let (conn, _keep) = match super::agents::connect() {
@@ -96,15 +113,116 @@ fn stop(env: &Env, stdin: impl Read + Send + 'static, err: &mut impl Write) -> i
     if !labels.is_empty() {
         label(&conn, &env.terminal_id, &labels);
     }
+    let mut code = 0;
+    let mut fail = |e: String| {
+        let _ = writeln!(err, "contr-rune hook: {e}");
+        code = 1;
+    };
     match report {
-        Ok(Some(text)) => match agents::send(&conn, &env.terminal_id, &env.coordinator, &text) {
-            Ok(()) => 0,
-            Err(e) => {
-                let _ = writeln!(err, "contr-rune hook: report to {}: {e}", env.coordinator);
-                1
+        Ok(Some(text)) => {
+            if let Err(e) = agents::send(&conn, &env.terminal_id, &env.coordinator, &text) {
+                fail(format!("report to {}: {e}", env.coordinator));
             }
-        },
-        Ok(None) => 0,
+        }
+        Ok(None) => {}
+        Err(e) => fail(e),
+    }
+    match ask {
+        Ok(Some(tokens)) => {
+            if let Err(e) = ask_to_save(&conn, &input, tokens, env, out) {
+                fail(e);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => fail(e),
+    }
+    code
+}
+
+/// The context size when this Stop may ask for the state file: not inside a hook-kept turn, the
+/// size is at `CONTR_SAVE_AT` or more, and the session was not asked before.
+fn save_request(input: &Value, transcript: &str, env: &restore::Env) -> Result<Option<u64>, String> {
+    if input["stop_hook_active"] == true || transcript.is_empty() {
+        return Ok(None);
+    }
+    let tokens = turn::context_tokens(Path::new(transcript)).map_err(|e| format!("transcript {transcript:?}: {e}"))?;
+    let asked = env.asked(input["session_id"].as_str().unwrap_or_default());
+    Ok(restore::should_ask(tokens, env.save_at(), asked).then_some(tokens))
+}
+
+/// Keeps the turn going once when the session is a coordinator: marks it asked, then prints the
+/// block decision.
+fn ask_to_save(conn: &Conn, input: &Value, tokens: u64, env: &Env, out: &mut impl Write) -> Result<(), String> {
+    if !is_coordinator(conn, input, &env.terminal_id)? {
+        return Ok(());
+    }
+    env.restore.mark_asked(input["session_id"].as_str().unwrap_or_default())?;
+    let decision = json!({"decision": "block", "reason": restore::ask_reason(tokens)});
+    writeln!(out, "{decision}").map_err(|e| e.to_string())
+}
+
+/// Whether the session is a coordinator: it ran `/contr:orchestrate`, or its hc terminal has the
+/// role orchestrator.
+fn is_coordinator(conn: &Conn, input: &Value, terminal: &str) -> Result<bool, String> {
+    if let Some(transcript) = input["transcript_path"].as_str().filter(|t| !t.is_empty()) {
+        match turn::ran_command(Path::new(transcript), restore::ORCHESTRATE_COMMAND) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("transcript {transcript:?}: {e}")),
+        }
+    }
+    if terminal.is_empty() {
+        return Ok(false);
+    }
+    Ok(agents::get(conn, "", terminal)?.role == "orchestrator")
+}
+
+/// `hook session-start`: after a compaction (source `compact`, or none) in a coordinator, prints
+/// the restore text, which Claude Code adds to the new context. Any other source prints nothing.
+fn session_start(env: &Env, stdin: impl Read + Send + 'static, out: &mut impl Write, err: &mut impl Write) -> i32 {
+    if env.coordinator.is_empty() && env.terminal_id.is_empty() {
+        return 0;
+    }
+    let input = match read_input(stdin) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(err, "contr-rune hook: bad hook input: {e}");
+            return 1;
+        }
+    };
+    if input["source"].as_str().is_some_and(|s| !s.is_empty() && s != "compact") {
+        return 0;
+    }
+    env.restore.clear_asked(input["session_id"].as_str().unwrap_or_default());
+    let conn = super::agents::connect();
+    let result = match &conn {
+        Ok((conn, _keep)) => is_coordinator(conn, &input, &env.terminal_id),
+        Err(e) => Err(e.clone()),
+    };
+    match result {
+        Ok(true) => {}
+        Ok(false) => return 0,
+        Err(e) => {
+            let _ = writeln!(err, "contr-rune hook: {e}");
+            return 1;
+        }
+    }
+    let workers = conn.as_ref().map_err(Clone::clone).and_then(|(c, _)| agents::list(c, false));
+    let owner = match &env.restore.owner_file {
+        Some(path) => OwnerFile::new(path.clone()).open_items(None).map_err(|e| e.to_string()),
+        None => Err("no home folder to find owner.json in".to_owned()),
+    };
+    let r = restore::Restore {
+        cwd: input["cwd"].as_str().unwrap_or_default(),
+        me: &env.terminal_id,
+        workers,
+        owner,
+        flow: super::agents::flow_text(env.restore.config.as_deref()),
+        playbook: restore::playbook(env.restore.kit.as_deref()),
+    };
+    match write!(out, "{}", restore::restore_text(&r)) {
+        Ok(()) => 0,
         Err(e) => {
             let _ = writeln!(err, "contr-rune hook: {e}");
             1
@@ -212,7 +330,7 @@ mod tests {
 
     #[test]
     fn labels_take_the_effort_of_the_input_before_the_environment() {
-        let env = |effort: &str, id: &str| Env { coordinator: String::new(), terminal_id: id.into(), effort: effort.into() };
+        let env = |effort: &str, id: &str| Env { coordinator: String::new(), terminal_id: id.into(), effort: effort.into(), restore: restore::Env::default() };
         let input = json!({"effort": {"level": "high"}});
         assert_eq!(labels(&input, "", &env("low", "t1")), vec![("contr.effort", "high".to_owned())]);
         assert_eq!(labels(&json!({}), "", &env("low", "t1")), vec![("contr.effort", "low".to_owned())]);
@@ -224,14 +342,14 @@ mod tests {
     fn input_is_one_json_value_and_bad_input_exits_1_never_2() {
         assert_eq!(read_input(&b"{\"a\":1} trailing"[..]).unwrap(), json!({"a": 1}));
         assert!(read_input(&b""[..]).is_err());
-        let env = Env { coordinator: "t3".into(), terminal_id: "t1".into(), effort: String::new() };
+        let env = Env { coordinator: "t3".into(), terminal_id: "t1".into(), effort: String::new(), restore: restore::Env::default() };
         let mut err = Vec::new();
-        assert_eq!(run(&["stop".into()], &env, &b"nope"[..], &mut err), 1);
+        assert_eq!(run(&["stop".into()], &env, &b"nope"[..], &mut Vec::new(), &mut err), 1);
         assert!(String::from_utf8(err).unwrap().contains("bad hook input"));
-        let outside = Env { coordinator: String::new(), terminal_id: String::new(), effort: String::new() };
-        assert_eq!(run(&["stop".into()], &outside, &b""[..], &mut Vec::new()), 0);
+        let outside = Env { coordinator: String::new(), terminal_id: String::new(), effort: String::new(), restore: restore::Env::default() };
+        assert_eq!(run(&["stop".into()], &outside, &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
         for args in [vec![], vec!["bogus".to_owned()], vec!["prompt".to_owned()]] {
-            assert_eq!(run(&args, &env, &b""[..], &mut Vec::new()), 1);
+            assert_eq!(run(&args, &env, &b""[..], &mut Vec::new(), &mut Vec::new()), 1);
         }
     }
 }

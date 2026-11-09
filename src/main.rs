@@ -30,6 +30,7 @@ mod pty;
 mod select;
 mod session;
 mod settings;
+mod settings_agents;
 mod shell;
 mod sidebar;
 mod split;
@@ -120,6 +121,10 @@ struct App {
     appearance: Appearance,
     /// The settings dialog is open.
     settings_open: bool,
+    /// The tab of the settings dialog.
+    settings_tab: dialog::Tab,
+    /// The Roles of the Agents tab.
+    roles: settings_agents::Roles,
     /// Whether the files panel is shown (⌘B).
     show_files: bool,
     /// The selected project's working-tree summary; `None` when it is not a repo or has no changes.
@@ -236,6 +241,8 @@ fn init() -> App {
         tab_drag: TabDragState::new(),
         appearance: settings::load(),
         settings_open: false,
+        settings_tab: dialog::Tab::General,
+        roles: settings_agents::Roles::default(),
         show_files: true,
         diff: None,
         diff_for: None,

@@ -69,6 +69,32 @@ const TAIL_BYTES: u64 = 1 << 20;
 /// The model id of the last assistant message in the last `TAIL_BYTES` of the transcript at
 /// `path`, or `None`. Claude Code writes `<synthetic>` for messages it made itself: skipped.
 pub fn last_model(path: &Path) -> std::io::Result<Option<String>> {
+    let mut model = None;
+    for entry in tail_entries(path)? {
+        if let Some(m) = entry["message"]["model"].as_str().filter(|m| !m.is_empty() && !m.starts_with('<')) {
+            model = Some(m.to_owned());
+        }
+    }
+    Ok(model)
+}
+
+/// The context size in tokens (input, cache read and cache creation) of the last assistant
+/// message with usage in the last `TAIL_BYTES` of the transcript at `path`; 0 when there is none
+/// (Go `ContextAndModel`).
+pub fn context_tokens(path: &Path) -> std::io::Result<u64> {
+    let mut tokens = 0;
+    for entry in tail_entries(path)? {
+        let usage = &entry["message"]["usage"];
+        if usage.is_object() {
+            tokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].iter().map(|k| usage[k].as_u64().unwrap_or(0)).sum();
+        }
+    }
+    Ok(tokens)
+}
+
+/// The assistant entries in the last `TAIL_BYTES` of the transcript at `path`. The first line
+/// after a seek is cut; it does not parse and is skipped.
+fn tail_entries(path: &Path) -> std::io::Result<Vec<Value>> {
     let mut file = std::fs::File::open(path)?;
     let size = file.metadata()?.len();
     if size > TAIL_BYTES {
@@ -76,18 +102,21 @@ pub fn last_model(path: &Path) -> std::io::Result<Option<String>> {
     }
     let mut tail = Vec::new();
     file.read_to_end(&mut tail)?;
-    let mut model = None;
-    // The first line after a seek is cut; it does not parse and is skipped.
-    for line in tail.split(|&b| b == b'\n') {
-        let Ok(entry) = serde_json::from_slice::<Value>(line) else { continue };
-        if entry["type"] != "assistant" {
-            continue;
-        }
-        if let Some(m) = entry["message"]["model"].as_str().filter(|m| !m.is_empty() && !m.starts_with('<')) {
-            model = Some(m.to_owned());
-        }
-    }
-    Ok(model)
+    let entries = tail.split(|&b| b == b'\n').filter_map(|line| serde_json::from_slice::<Value>(line).ok());
+    Ok(entries.filter(|e| e["type"] == "assistant").collect())
+}
+
+/// Whether the transcript at `path` holds a run of the slash command `name` (such as
+/// `contr:orchestrate`): Claude Code records it as a user message whose content is a plain string
+/// with `<command-name>/name</command-name>`. The tag inside a tool result (a list of blocks)
+/// does not count (Go `RanCommand`).
+pub fn ran_command(path: &Path, name: &str) -> std::io::Result<bool> {
+    let mark = format!("<command-name>/{name}</command-name>");
+    let bytes = std::fs::read(path)?;
+    let found = bytes.split(|&b| b == b'\n').filter(|l| l.windows(mark.len()).any(|w| w == mark.as_bytes())).any(|line| {
+        serde_json::from_slice::<Value>(line).is_ok_and(|e| e["type"] == "user" && e["message"]["content"].as_str().is_some_and(|t| t.contains(&mark)))
+    });
+    Ok(found)
 }
 
 /// The family word of a model id: `sonnet` for `claude-sonnet-5-5`; an unknown id stays as it is.
@@ -139,6 +168,30 @@ mod tests {
         for (id, want) in [("claude-opus-5-5", "opus"), ("claude-sonnet-5-5", "sonnet"), ("Claude-Haiku-4", "haiku"), ("gpt-9", "gpt-9")] {
             assert_eq!(short_model(id), want);
         }
+    }
+
+    #[test]
+    fn context_tokens_is_the_last_usage_and_ran_command_needs_a_plain_string() {
+        let dir = std::env::temp_dir().join(format!("contr-rune-turn-ctx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let usage = |i: u64, r: u64, c: u64| format!("{{\"type\":\"assistant\",\"message\":{{\"usage\":{{\"input_tokens\":{i},\"cache_read_input_tokens\":{r},\"cache_creation_input_tokens\":{c}}}}}}}\n");
+        let no_usage = "{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n";
+        std::fs::write(&path, format!("{}{}junk\n{no_usage}", usage(1, 1, 1), usage(10, 200, 3000))).unwrap();
+        assert_eq!(context_tokens(&path).unwrap(), 3210);
+        std::fs::write(&path, PROMPT).unwrap();
+        assert_eq!(context_tokens(&path).unwrap(), 0);
+        assert!(context_tokens(&dir.join("missing")).is_err());
+
+        let typed = r#"{"type":"user","message":{"role":"user","content":"<command-name>/contr:orchestrate</command-name> go"}}"#;
+        let in_result = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"<command-name>/contr:orchestrate</command-name>"}]}}"#;
+        std::fs::write(&path, format!("{PROMPT}\n{in_result}\n")).unwrap();
+        assert!(!ran_command(&path, "contr:orchestrate").unwrap());
+        std::fs::write(&path, format!("{PROMPT}\n{in_result}\n{typed}\n")).unwrap();
+        assert!(ran_command(&path, "contr:orchestrate").unwrap());
+        assert!(!ran_command(&path, "contr:other").unwrap());
+        assert!(ran_command(&dir.join("missing"), "x").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,7 +1,9 @@
-//! The settings dialog (K7a): a modal card near the top-centre over a dim scrim. Head with
-//! "Settings" and an `esc` chip, the Appearance row (System, Dark, Light), the versions, and a
-//! Done button. Keys: `settings-scrim`, `settings-dialog`, `settings-esc`, `appearance`,
-//! `settings-done`, `version/contr-rune`, `version/hc`, `settings-check-updates`, `update/error`.
+//! The settings dialog (K7a, C7): a modal card near the top-centre over a dim scrim. Head with
+//! "Settings" and an `esc` chip, the tabs (General, Agents, Updates) and a Done button. General
+//! has the Appearance row (System, Dark, Light), Agents the Roles (`settings_agents`), Updates the
+//! versions and the update rows. Keys: `settings-scrim`, `settings-dialog`, `settings-esc`,
+//! `settings-tabs`, `appearance`, `settings-done`, `version/contr-rune`, `version/hc`,
+//! `settings-check-updates`, `update/error`.
 //!
 //! The design's Transparency sliders are left out: the window is opaque.
 
@@ -10,6 +12,27 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl};
 
 use crate::App;
 use crate::settings::Appearance;
+use crate::settings_agents;
+
+/// The tabs of the dialog.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab {
+    General,
+    Agents,
+    Updates,
+}
+
+impl Tab {
+    const ALL: [Tab; 3] = [Tab::General, Tab::Agents, Tab::Updates];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::General => "General",
+            Tab::Agents => "Agents",
+            Tab::Updates => "Updates",
+        }
+    }
+}
 
 /// Card width.
 pub const WIDTH: f32 = 520.0;
@@ -33,6 +56,20 @@ pub fn build(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .child(text("Settings").font(k.ty.ui_medium.lh(20.0)).color(c.text_strong))
         .child(spacer())
         .child(esc);
+
+    let tab_labels = Tab::ALL.map(Tab::label);
+    let tabs = SegmentedControl::new(&tab_labels, Tab::ALL.iter().position(|x| *x == s.settings_tab))
+        .label("Settings")
+        .width(Some(WIDTH - 40.0))
+        .on_pick(|s: &mut App, i, _tx| {
+            s.settings_tab = Tab::ALL[i];
+            if s.settings_tab == Tab::Agents {
+                s.roles = settings_agents::Roles::load();
+            }
+        })
+        .build(k)
+        .key("settings-tabs");
+    let tabs = row().w_full().px(20.0).pt(10.0).child(tabs);
 
     let selected = Appearance::ALL.iter().position(|a| *a == s.appearance);
     let labels = Appearance::ALL.map(Appearance::label);
@@ -90,7 +127,14 @@ pub fn build(k: &Kit, s: &App, layer: &mut Vec<El>) {
     let done = Button::new("Done").variant(ButtonVariant::Contrast).on_press(close).build(k).key("settings-done");
     let footer = row().w_full().px(20.0).pt(10.0).pb(14.0).child(spacer()).child(done);
 
-    let hairline = || el().w_full().h(1.0).fill(c.border_muted);
+    let mut popups = Vec::new();
+    let body = match s.settings_tab {
+        Tab::General => col().w_full().child(appearance),
+        Tab::Agents => settings_agents::build(k, s, &mut popups),
+        Tab::Updates => col().w_full().child(versions).child(updates),
+    };
+
+    let hairline =|| el().w_full().h(1.0).fill(c.border_muted);
     let mut card = col()
         .key("settings-dialog")
         .role("dialog")
@@ -103,10 +147,8 @@ pub fn build(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .token_motion(k.motion.overlay)
         .child(head)
         .child(hairline())
-        .child(appearance)
-        .child(hairline())
-        .child(versions)
-        .child(updates)
+        .child(tabs)
+        .child(body)
         .child(hairline())
         .child(footer)
         .modal(true, close);
@@ -116,4 +158,6 @@ pub fn build(k: &Kit, s: &App, layer: &mut Vec<El>) {
 
     layer.push(el().key("settings-scrim").absolute(0.0, 0.0).w_full().h_full().fill(c.scrim).token_motion(k.motion.overlay).a11y_hidden());
     layer.push(col().key("settings-layer").absolute(0.0, 0.0).w_full().h_full().pt(TOP).items_center().child(card));
+    // The selects' lists lie above the card.
+    layer.extend(popups);
 }

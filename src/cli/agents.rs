@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::agents::{self, Spec};
 use crate::agents_config::{Config, Flow};
@@ -210,8 +210,8 @@ pub(super) fn connect() -> Result<(Conn, Keep), String> {
 
 /// The flow block of the profiles file, or the default flow with the error when the file cannot
 /// be read.
-fn flow_text(env: &Env) -> String {
-    match load(env) {
+pub(super) fn flow_text(config_path: Option<&Path>) -> String {
+    match config_path.ok_or_else(|| "agents: no home folder to find agents.json in".to_owned()).and_then(Config::load) {
         Ok(cfg) => cfg.flow.text(),
         Err(e) => format!("The flow could not be read ({e}); the default flow follows.\n{}", Flow::default().text()),
     }
@@ -233,7 +233,7 @@ pub fn run(args: &[String], env: &Env, out: &mut impl Write, err: &mut impl Writ
     let rest = &args[1..];
     match sub {
         "help" | "-h" | "--help" => {
-            let _ = write!(out, "{USAGE}\n{}", flow_text(env));
+            let _ = write!(out, "{USAGE}\n{}", flow_text(env.config_path.as_deref()));
             0
         }
         "flow" if !rest.is_empty() => {
