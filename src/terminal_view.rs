@@ -16,9 +16,14 @@ pub(crate) fn terminal_panel(k: &Kit, s: &App) -> El {
         Some(o) => panel.child(o),
         None => panel,
     };
-    match notch::notch(k, s) {
+    let panel = match notch::notch(k, s) {
         Some(n) => panel.child(n),
         None => panel,
+    };
+    // The link a ⌘-click opened, for the tree: a headless run opens nothing.
+    match &s.select.opened {
+        Some(url) if rune::is_headless() => panel.child(el().key("terminal/opened-url").label(url.clone()).pin(Some(0.0), Some(0.0), None, None).w(0.0).h(0.0)),
+        _ => panel,
     }
 }
 
@@ -128,7 +133,14 @@ fn pane(k: &Kit, s: &App, idx: usize, id: u64, split: bool) -> El {
                     tx.blur();
                 }
             }
-            select::drag(s, idx, d);
+            // ⌘-click on a link opens it and selects nothing (`d.data` marks the gesture for its later phases).
+            if d.phase == Phase::Down && tx.mods().cmd {
+                if let Some(url) = select::link_at(s, idx, d.x, d.y) {
+                    d.data = 1.0;
+                    if tx.open_url(&url).is_ok() { s.select.opened = Some(url); }
+                }
+            }
+            if d.data == 0.0 { select::drag(s, idx, d); }
         })
         .on_wheel(move |s: &mut App, ev: WheelEvent, _tx| {
             s.wheel += ev.dy;
