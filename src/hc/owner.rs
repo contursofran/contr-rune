@@ -238,7 +238,6 @@ pub struct NewQuestion {
 
 /// A to-do to add; `pin` gives it its id.
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // used by D9 (the `pin_for_owner` tool)
 pub struct NewTodo {
     pub project: String,
     pub coordinator: String,
@@ -295,6 +294,17 @@ fn todo_is_open(t: &Value) -> bool {
 }
 
 impl OwnerFile {
+    /// The open questions and to-dos as the file holds them (Go's field names), those of
+    /// `project` only, or of all projects when it is `None`.
+    pub fn open_items(&self, project: Option<&str>) -> io::Result<(Vec<Value>, Vec<Value>)> {
+        let v = self.load()?;
+        let pick = |list: &str, open: fn(&Value) -> bool| -> Vec<Value> {
+            let items = v[list].as_array().map_or(&[][..], Vec::as_slice);
+            items.iter().filter(|i| open(i) && project.is_none_or(|p| i["project"].as_str().unwrap_or_default() == p)).cloned().collect()
+        };
+        Ok((pick("questions", question_is_open), pick("todos", todo_is_open)))
+    }
+
     /// Adds a question and returns its id (`D<n>`).
     ///
     /// # Errors
@@ -328,7 +338,6 @@ impl OwnerFile {
     ///
     /// # Errors
     /// `InvalidInput` for empty text or a kind that is not `do` or `know`.
-    #[allow(dead_code)] // used by D9 (the `pin_for_owner` tool)
     pub fn pin(&self, mut t: NewTodo) -> io::Result<String> {
         if t.text.is_empty() {
             return Err(invalid("a to-do needs text".to_owned()));
