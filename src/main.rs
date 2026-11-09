@@ -162,6 +162,8 @@ struct App {
     /// The agent row that is selected (its address). Showing its terminal comes in H8.
     selected_agent: Option<String>,
     agent_menu: sidebar::AgentMenu,
+    /// The open tab menu (T3): the tab and where it opened.
+    tab_menu: Option<(u64, rune::PointerPress)>,
     /// The owner's questions and to-dos (`owner.json`, shared with Go contr), what was last read from
     /// it, when that file was last changed, and the card that shows them (H9).
     owner: Option<Arc<dyn OwnerSource>>,
@@ -262,6 +264,7 @@ fn init() -> App {
         agents_minute: 0,
         selected_agent: None,
         agent_menu: Default::default(),
+        tab_menu: None,
         find: Find::new(),
         owner,
         owner_state: OwnerState::default(),
@@ -483,6 +486,17 @@ impl App {
                 None => { self.active = None; self.selected_agent = None; self.find.close(); }
             }
         }
+    }
+
+    /// Close every other tab of `id`'s project (each by the usual close rules: a plain tab is killed
+    /// and removed, an agent's tab only detaches), then show `id`.
+    fn close_other_tabs(&mut self, id: u64) {
+        let Some(project) = self.tabs.iter().find(|t| t.session.id() == id).map(|t| t.project) else { return };
+        let others: Vec<u64> = self.project_tabs(project).map(|t| t.session.id()).filter(|t| *t != id).collect();
+        for other in others {
+            self.close_tab(other);
+        }
+        self.select_tab(id);
     }
 
     /// Move the `from`-th tab of `project` to position `to` among that project's tabs.

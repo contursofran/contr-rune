@@ -1,8 +1,8 @@
 //! The title bar: the tab strip and its trailing buttons (diff summary, split, search, files toggle).
 
-use rune::{Cx, El, Icon, Tx};
+use rune::{Cx, El, Icon, PointerButton, Tx};
 use rune_kit::shell::{TabItem, TabItemStatus, TabOrientation, TabOverflow, TabReorder, TabStrip};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, State};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, MenuItem, State, context_menu};
 
 use crate::theme::*;
 use crate::{App, PLUS, Status, TERM, shell, sidebar};
@@ -36,11 +36,15 @@ pub(crate) fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>)
         } else {
             (s.status(*id) == Status::Working).then_some(TabItemStatus::Busy)
         };
-        match s.tab_agent(*id) {
+        let tab_id_n = *id;
+        let item = match s.tab_agent(*id) {
             // An agent's tab: its title and state glyph (H6) replace the terminal title and prompt icon.
             Some(a) => TabItem::new(tab_id(*id), a.display_title().to_owned()).avatar(sidebar::agent_glyph(k, a)),
             None => TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status),
-        }
+        };
+        // A secondary press opens the tab's menu (T3).
+        item.marked(s.tab_menu.is_some_and(|(open, _)| open == tab_id_n))
+            .decorate(move |tab, _| tab.on_secondary_press(move |s: &mut App, at, _tx| s.tab_menu = Some((tab_id_n, at))))
     });
     let active = s.active.map(tab_id);
     let plus = IconButton::new(&PLUS)
@@ -59,9 +63,18 @@ pub(crate) fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>)
         .close_icon(k.glyph.close)
         .trailing_action(plus)
         .on_select(|s: &mut App, id: &str, _tx| { if let Ok(id) = id.parse() { s.select_tab(id); } })
-        .on_close(|s: &mut App, id: &str, _tx| { if let Ok(id) = id.parse() { s.close_tab(id); } })
+        .on_close(|s: &mut App, id: &str, tx| {
+            let Ok(id) = id.parse() else { return };
+            // The kit closes on the button and on a middle click alike. A middle click leaves an
+            // agent's tab alone: only its button or menu detaches it (T3).
+            if tx.button() == PointerButton::Middle && s.tab_agent(id).is_some() {
+                return;
+            }
+            s.close_tab(id);
+        })
         .on_reorder(move |s: &mut App, r: TabReorder, _tx| s.reorder_tab(project, r.from, r.to))
         .build_layered(k, layer);
+    tab_menu(k, s, layer);
     // The leading area stays free for the macOS traffic lights; the tabs start after it.
     shell::titlebar(k, shell::lights_gap(), strip, trailing(k, s))
 }
@@ -124,4 +137,23 @@ fn trailing(k: &Kit, s: &App) -> Vec<El> {
             .key("files-toggle"),
     );
     items
+}
+
+/// The open tab menu (T3), mounted in `layer`: Close (off on an agent's tab, which only detaches
+/// through its button) and Close others.
+fn tab_menu(k: &Kit, s: &App, layer: &mut Vec<El>) {
+    let Some((id, at)) = s.tab_menu else { return };
+    let Some(i) = s.project_tabs(s.selected_project).position(|t| t.session.id() == id) else { return };
+    let agent = s.tab_agent(id).is_some();
+    context_menu(format!("tab/{i}/menu"), rune::el(), Some(at))
+        .item(MenuItem::new("Close").disabled(agent).on_select(move |s: &mut App| {
+            s.tab_menu = None;
+            s.close_tab(id);
+        }))
+        .item(MenuItem::new("Close others").on_select(move |s: &mut App| {
+            s.tab_menu = None;
+            s.close_other_tabs(id);
+        }))
+        .on_close(|s: &mut App| s.tab_menu = None)
+        .build(k, layer);
 }
