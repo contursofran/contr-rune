@@ -21,8 +21,6 @@ use super::wire::{HelloResult, RpcError};
 pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 /// Credit a stream starts with (bytes).
 pub const START_CREDIT: u32 = 256 * 1024;
-/// A viewer more than this far behind gets a repaint instead of the backlog (the core's rule).
-pub const REPAINT_BEHIND: u64 = 4 * 1024 * 1024;
 
 /// Frame kinds ([hcA] table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +132,7 @@ impl Decoder {
     }
 
     /// Bytes held for an incomplete frame.
+    #[cfg(test)]
     pub fn pending(&self) -> usize {
         self.buf.len()
     }
@@ -185,6 +184,7 @@ impl CloseInfo {
     }
 
     /// The acknowledgement of our own CLOSE.
+    #[cfg(test)]
     pub fn is_ack(&self) -> bool {
         self.reason.is_none()
     }
@@ -205,6 +205,7 @@ impl Default for SendWindow {
 }
 
 impl SendWindow {
+    #[cfg(test)]
     pub fn available(&self) -> u64 {
         self.avail
     }
@@ -318,10 +319,10 @@ impl FramedConn {
             Err(RecvTimeoutError::Disconnected) => return Err(HcError::Closed),
         };
         if hello.generation != 1 {
-            return Err(HcError::Rpc { kind: "generation".into(), message: format!("unsupported hc protocol generation {} (need 1)", hello.generation), hint: None });
+            return Err(HcError::Rpc { kind: "generation".into(), message: format!("unsupported hc protocol generation {} (need 1)", hello.generation) });
         }
         if !hello.framed {
-            return Err(HcError::Rpc { kind: "needs_framed".into(), message: "the core did not switch to framed mode".into(), hint: None });
+            return Err(HcError::Rpc { kind: "needs_framed".into(), message: "the core did not switch to framed mode".into() });
         }
         Ok((FramedConn { writer: Mutex::new(writer), shared, next_id: AtomicU64::new(1) }, hello))
     }

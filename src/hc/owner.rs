@@ -107,10 +107,6 @@ pub trait OwnerSource: Send + Sync {
 
     /// A value that changes when the content changes (the file's modification time).
     fn stamp(&self) -> Option<SystemTime>;
-
-    fn changed_since(&self, stamp: Option<SystemTime>) -> bool {
-        self.stamp() != stamp
-    }
 }
 
 /// `owner.json` of Go contr.
@@ -134,6 +130,7 @@ impl OwnerFile {
         Some(OwnerFile::new(path))
     }
 
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }

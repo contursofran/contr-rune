@@ -23,7 +23,7 @@ pub enum HcError {
     /// The connection died while waiting: the call may have run, do not retry a `terminal.run`.
     Closed,
     /// Any other error object from the core.
-    Rpc { kind: String, message: String, hint: Option<String> },
+    Rpc { kind: String, message: String },
     /// Write failure, timeout or an unreadable reply.
     Io(io::Error),
 }
@@ -32,7 +32,7 @@ impl HcError {
     pub fn from_rpc(e: RpcError) -> HcError {
         match e.kind() {
             "not_found" => HcError::NotFound(e.message),
-            _ => HcError::Rpc { kind: e.kind().to_owned(), message: e.message, hint: e.data.and_then(|d| d.hint) },
+            _ => HcError::Rpc { kind: e.kind().to_owned(), message: e.message },
         }
     }
 
@@ -225,11 +225,11 @@ mod tests {
         let c = conn.clone();
         let h = std::thread::spawn(move || c.call("terminal.send", json!({}), T));
         let r = request(&mut core);
-        let err = json!({"code": -32000, "message": "agent is blocked", "data": {"kind": "blocked", "hint": "answer it"}});
+        let err = json!({"code": -32000, "message": "agent is blocked", "data": {"kind": "blocked", "hint": null}});
         writeln!(out, "{}", json!({"id": r["id"], "error": err})).unwrap();
         match h.join().unwrap() {
-            Err(HcError::Rpc { kind, message, hint }) => {
-                assert_eq!((kind.as_str(), message.as_str(), hint.as_deref()), ("blocked", "agent is blocked", Some("answer it")));
+            Err(HcError::Rpc { kind, message }) => {
+                assert_eq!((kind.as_str(), message.as_str()), ("blocked", "agent is blocked"));
             }
             other => panic!("{other:?}"),
         }

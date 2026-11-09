@@ -4,9 +4,6 @@
 //! watcher that keeps the connection state for Settings. H2: the framed codec and connection
 //! (`framed`) and the fake core's framed mode.
 
-// Wire types and helpers are used by later parts (H2 and on).
-#![allow(dead_code)]
-
 pub mod conn;
 pub mod dial;
 pub mod fake;
