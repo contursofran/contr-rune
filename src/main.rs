@@ -38,7 +38,7 @@ use rune::{AppSpec, Color, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, Phase, Tx,
 use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use find::Find;
-use hc::term::{HcSession, Spec as HcSpec};
+use hc::term::{HcSession, Ownership, Spec as HcSpec};
 use hc::model::{self, Agent};
 use hc::restore;
 use hc::{Dialer, HcStatus, HcUpdate};
@@ -64,6 +64,9 @@ struct Project {
 struct Tab {
     project: usize,
     session: Pty,
+    /// The address of the agent whose terminal this tab shows (H8). Such a tab is not owned by the
+    /// app: closing it only detaches. Plain terminal tabs have `None` and are killed on close.
+    agent: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -211,16 +214,16 @@ impl App {
         // With hc the tab is a terminal in the core; a thread creates it and a failure falls back
         // to a local PTY (see `hc_fallbacks`).
         if let Some(dialer) = self.hc_dialer.clone() {
-            let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: None };
+            let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: None, ownership: Ownership::Owned };
             self.next_id += 1;
-            self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)) });
+            self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)), agent: None });
             self.select_tab(id);
             return;
         }
         match Session::spawn(id, &p.path, size, self.waker.clone()) {
             Ok(session) => {
                 self.next_id += 1;
-                self.tabs.push(Tab { project, session: Pty::Local(session) });
+                self.tabs.push(Tab { project, session: Pty::Local(session), agent: None });
                 self.select_tab(id);
             }
             Err(e) => self.error = Some(format!("couldn't start a shell: {e}")),
@@ -252,10 +255,10 @@ impl App {
                 },
             };
             let p = &self.projects[project];
-            let spec = HcSpec { dialer: dialer.clone(), cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: Some(item.address) };
+            let spec = HcSpec { dialer: dialer.clone(), cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: Some(item.address), ownership: Ownership::Owned };
             let id = self.next_id;
             self.next_id += 1;
-            self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)) });
+            self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)), agent: None });
             opened.push((id, project));
         }
         self.refresh_agents();
@@ -329,15 +332,29 @@ impl App {
         }
     }
 
+    /// Show an agent's terminal: select the tab that already shows it, else attach it (framed, with
+    /// history, read-write) as a tab of the agent's project in the focused pane. The tab is not
+    /// owned by the app (`Ownership::Borrowed`): closing it only detaches.
     fn select_agent(&mut self, address: String) {
-        if self.agents.iter().any(|a| a.address == address) {
-            self.selected_agent = Some(address);
+        if let Some(id) = self.tabs.iter().find(|t| t.agent.as_deref() == Some(address.as_str())).map(|t| t.session.id()) {
+            self.select_tab(id);
+            return;
         }
+        let Some(project) = self.agents.iter().find(|a| a.address == address).and_then(|a| a.project) else { return };
+        let Some(dialer) = self.hc_dialer.clone() else { return };
+        let Some(p) = self.projects.get(project) else { return };
+        let id = self.next_id;
+        self.next_id += 1;
+        let size = self.pane_size[self.focus_idx()];
+        let spec = HcSpec { dialer, cwd: p.path.clone(), project: p.name.clone(), size, waker: self.waker.clone(), existing: Some(address.clone()), ownership: Ownership::Borrowed };
+        self.tabs.push(Tab { project, session: Pty::Hc(HcSession::start(id, spec)), agent: Some(address) });
+        self.select_tab(id);
     }
 
     fn select_tab(&mut self, id: u64) {
         let Some(project) = self.tabs.iter().find(|t| t.session.id() == id).map(|t| t.project) else { return };
-        self.selected_agent = None;
+        // Selecting a plain tab clears the agent selection; an agent's tab sets it.
+        self.selected_agent = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| t.agent.clone());
         // A split belongs to one project: a tab of another project takes the whole panel.
         if self.split.as_ref().is_some_and(|sp| sp.project != project) { self.split = None; }
         // In a split the tab goes to the focused pane, or, when the other pane shows it, focus moves there.
@@ -369,7 +386,8 @@ impl App {
     fn close_tab(&mut self, id: u64) {
         let Some(i) = self.tabs.iter().position(|t| t.session.id() == id) else { return };
         let project = self.tabs[i].project;
-        // Dropping a local session closes the PTY (the shell gets SIGHUP); an hc terminal is killed and removed.
+        // Dropping a local session closes the PTY (the shell gets SIGHUP). An hc terminal we made is
+        // killed and removed; an agent's tab (`agent` is set) only detaches.
         self.tabs[i].session.close();
         let siblings: Vec<u64> = self.project_tabs(project).map(|t| t.session.id()).collect();
         let pos = siblings.iter().position(|s| *s == id).unwrap_or(0);
@@ -381,7 +399,7 @@ impl App {
             let other = split.map(|sp| if sp.panes[0] == id { sp.panes[1] } else { sp.panes[0] });
             match other.or_else(|| rest.get(pos.min(rest.len().saturating_sub(1))).copied()) {
                 Some(next) => self.select_tab(next),
-                None => { self.active = None; self.find.close(); }
+                None => { self.active = None; self.selected_agent = None; self.find.close(); }
             }
         }
     }
@@ -423,6 +441,12 @@ impl App {
     }
 
     /// The program in an hc tab reports `blocked`: it waits for the owner.
+    /// The agent a tab shows, when it is an agent's tab and the agent is still known.
+    fn tab_agent(&self, id: u64) -> Option<&hc::model::Agent> {
+        let address = self.tabs.iter().find(|t| t.session.id() == id)?.agent.as_deref()?;
+        self.agents.iter().find(|a| a.address == address)
+    }
+
     fn tab_needs_you(&self, id: u64) -> bool {
         let Some(address) = self.tabs.iter().find(|t| t.session.id() == id).and_then(|t| t.session.address()) else { return false };
         self.hc_terminals.iter().any(|t| t.address == address && t.state != "finished" && t.status.as_ref().is_some_and(|s| s.state == "blocked"))
@@ -902,7 +926,11 @@ fn title_bar(k: &Kit, s: &App, cx: &mut Cx<App>, layer: &mut Vec<El>) -> El {
         } else {
             (s.status(*id) == Status::Working).then_some(TabItemStatus::Busy)
         };
-        TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status)
+        match s.tab_agent(*id) {
+            // An agent's tab: its title and state glyph (H6) replace the terminal title and prompt icon.
+            Some(a) => TabItem::new(tab_id(*id), a.display_title().to_owned()).avatar(sidebar::agent_glyph(k, a)),
+            None => TabItem::new(tab_id(*id), title.as_str()).icon(&TERM).status(status),
+        }
     });
     let active = s.active.map(tab_id);
     let plus = IconButton::new(&PLUS)

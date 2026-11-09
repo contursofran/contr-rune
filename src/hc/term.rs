@@ -45,6 +45,33 @@ const HISTORY: u32 = 1000;
 /// How often an attached stream looks for a `restarted` event or a closed tab.
 const POLL: Duration = Duration::from_millis(250);
 
+/// Whose terminal a tab shows. contr-rune makes plain terminal tabs (role=terminal), so it owns them:
+/// closing the tab kills and removes the terminal. An agent's terminal (H8) belongs to the core and
+/// its agent: closing its tab only detaches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ownership {
+    Owned,
+    Borrowed,
+}
+
+/// What closing a tab does to its terminal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OnClose {
+    /// `terminal.kill`, then `terminal.rm`.
+    KillAndRemove,
+    /// A CLOSE frame on the stream; the terminal lives on.
+    Detach,
+}
+
+impl Ownership {
+    pub fn on_close(self) -> OnClose {
+        match self {
+            Ownership::Owned => OnClose::KillAndRemove,
+            Ownership::Borrowed => OnClose::Detach,
+        }
+    }
+}
+
 /// What a new hc tab needs.
 #[derive(Clone)]
 pub struct Spec {
@@ -57,6 +84,8 @@ pub struct Spec {
     pub waker: Option<Waker>,
     /// A terminal that already exists (restored at launch): attach to it instead of running one.
     pub existing: Option<String>,
+    /// Whether closing the tab may kill the terminal.
+    pub ownership: Ownership,
 }
 
 struct State {
@@ -132,10 +161,12 @@ impl HcSession {
     pub fn start(id: u64, spec: Spec) -> HcSession {
         let size = spec.size;
         let waker = spec.waker.clone();
+        // An existing terminal has its address from the start (the app looks tabs up by it).
+        let spec_address = spec.existing.clone();
         let exited = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             spec,
-            state: Mutex::new(State { conn: None, channel: 0, address: None, size, queued: Vec::new(), closing: false, epoch: 0, focused: false }),
+            state: Mutex::new(State { conn: None, channel: 0, address: spec_address, size, queued: Vec::new(), closing: false, epoch: 0, focused: false }),
             cv: Condvar::new(),
             keep: Mutex::new(None),
             failure: Mutex::new(None),
@@ -260,15 +291,26 @@ impl HcSession {
         }
     }
 
-    /// The tab was closed: `terminal.kill` then `terminal.rm`, off the UI thread. When
-    /// `terminal.run` is still in flight, its thread does this once it returns.
+    pub fn ownership(&self) -> Ownership {
+        self.shared.spec.ownership
+    }
+
+    /// The tab was closed. An owned terminal: `terminal.kill` then `terminal.rm`, off the UI
+    /// thread (when `terminal.run` is still in flight, its thread does this once it returns). A
+    /// borrowed one (an agent's): only a CLOSE frame on the stream; it is never killed or removed.
     pub fn close(&self) {
-        let address = {
+        let (address, line) = {
             let mut st = self.shared.state.lock().unwrap();
             st.closing = true;
-            st.address.clone()
+            (st.address.clone(), st.conn.clone().filter(|_| st.channel != 0).map(|c| (c, st.channel)))
         };
         self.shared.cv.notify_all();
+        if self.ownership().on_close() == OnClose::Detach {
+            if let Some((conn, channel)) = line {
+                let _ = conn.close(channel);
+            }
+            return;
+        }
         if let Some(address) = address {
             let shared = self.shared.clone();
             let _ = std::thread::Builder::new().name("hc-term-close".into()).spawn(move || remove(&shared, &address));
@@ -662,6 +704,10 @@ mod tests {
     const WAIT: Duration = Duration::from_secs(5);
 
     fn start(fx: Value, existing: Option<&str>) -> (HcSession, Arc<Fixture>) {
+        start_as(fx, existing, Ownership::Owned)
+    }
+
+    fn start_as(fx: Value, existing: Option<&str>, ownership: Ownership) -> (HcSession, Arc<Fixture>) {
         let fx = Arc::new(Fixture::from_value(fx));
         let spec = Spec {
             dialer: Dialer::Fake(fx.clone()),
@@ -670,6 +716,7 @@ mod tests {
             size: Size { cols: 40, rows: 10 },
             waker: None,
             existing: existing.map(str::to_owned),
+            ownership,
         };
         (HcSession::start(1, spec), fx)
     }
@@ -804,6 +851,32 @@ mod tests {
         until("detached", || s.detached());
         s.close();
         // The close thread kills and removes the terminal on a fresh line.
+        until("removed", || fx.terminals().is_empty());
+    }
+
+    #[test]
+    fn only_owned_terminals_are_killed_on_close() {
+        assert_eq!(Ownership::Owned.on_close(), OnClose::KillAndRemove);
+        assert_eq!(Ownership::Borrowed.on_close(), OnClose::Detach);
+    }
+
+    #[test]
+    fn closing_a_borrowed_tab_detaches_and_leaves_the_terminal_live() {
+        let (s, fx) = start_as(json!({"terminals": [live("t3")]}), Some("t3"), Ownership::Borrowed);
+        until("attached", || s.address().is_some() && !s.detached());
+        std::thread::sleep(Duration::from_millis(200));
+        s.close();
+        std::thread::sleep(Duration::from_millis(600));
+        let t = fx.terminals();
+        assert_eq!(t.len(), 1, "not removed: {t:?}");
+        assert_eq!(t[0]["state"], "live", "not killed: {t:?}");
+    }
+
+    #[test]
+    fn closing_an_owned_tab_kills_and_removes() {
+        let (s, fx) = start_as(json!({"terminals": [live("t3")]}), Some("t3"), Ownership::Owned);
+        until("attached", || s.address().is_some() && !s.detached());
+        s.close();
         until("removed", || fx.terminals().is_empty());
     }
 }

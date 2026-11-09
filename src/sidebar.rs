@@ -17,7 +17,7 @@ use rune::{Color, Cycle, El, FileDialogOptions, Icon, LoopSpec, el, icon, row, s
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
 
-use crate::hc::model::{self, AgentState, Line};
+use crate::hc::model::{self, Agent, AgentState, Line};
 use crate::session::now_ms;
 use crate::theme;
 use crate::{App, PLUS, Project, Status, TERM, shell};
@@ -184,8 +184,7 @@ fn braille(color: Color, label: &str) -> El {
 /// `⠿` while it waits, a faint `⠶` at rest. An orchestrator: the Claude mark, turning while it
 /// works or waits, dim at rest. Red only for an agent that needs you. The element is keyed `glyph`
 /// and says its state in its label (`needs you`, `working`, `waiting`, `idle`).
-fn agent_glyph(k: &Kit, line: &Line) -> El {
-    let a = line.agent;
+pub fn agent_glyph(k: &Kit, a: &Agent) -> El {
     let word = match a.state {
         AgentState::NeedsYou { .. } => "needs you",
         AgentState::Working => "working",
@@ -212,7 +211,7 @@ fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
     let a = line.agent;
     let address = a.address.clone();
     let row = SidebarRow::new(a.display_title().to_owned())
-        .avatar(agent_glyph(k, line))
+        .avatar(agent_glyph(k, a))
         .subtitle(model::meta(line))
         .subtitle_style(theme::META)
         .title_style(theme::BODY)
