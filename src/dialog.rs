@@ -71,7 +71,7 @@ pub fn build(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .gap(2.0)
         .child(text("Versions").font(k.ty.small_medium).color(c.text_faint).pb(4.0))
         .child(version("version/contr-rune", "contr-rune", env!("CARGO_PKG_VERSION"), false))
-        .child(version("version/hc", "hc", "not installed", true));
+        .child(version("version/hc", "hc", &s.hc.label(), !s.hc.is_connected()));
 
     let done = Button::new("Done").variant(ButtonVariant::Contrast).on_press(close).build(k).key("settings-done");
     let footer = row().w_full().px(20.0).pt(10.0).pb(14.0).child(spacer()).child(done);

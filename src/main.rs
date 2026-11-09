@@ -14,6 +14,7 @@ mod diff;
 mod files;
 mod find;
 mod grid;
+mod hc;
 mod keys;
 mod session;
 mod settings;
@@ -35,6 +36,7 @@ use rune::{AppSpec, Color, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, Phase, Tx,
 use diff::DiffSummary;
 use files::{Change, Kind, Scan};
 use find::Find;
+use hc::{Dialer, HcStatus, HcUpdate};
 use session::{Session, Size, now_ms};
 use settings::Appearance;
 use split::Split;
@@ -106,6 +108,10 @@ struct App {
     changed_only: bool,
     /// The find bar over the terminal (⌘F).
     find: Find,
+    /// The connection to hc (herdr-core), shown in Settings.
+    hc: HcStatus,
+    hc_tx: Sender<HcUpdate>,
+    hc_rx: Receiver<HcUpdate>,
 }
 
 fn init() -> App {
@@ -131,6 +137,7 @@ fn init() -> App {
         })
         .collect();
     let (diff_tx, diff_rx) = channel();
+    let (hc_tx, hc_rx) = channel();
     App {
         projects,
         tabs: Vec::new(),
@@ -158,6 +165,9 @@ fn init() -> App {
         diff_rx,
         tree: files::empty(),
         changed_only: false,
+        hc: HcStatus::NotInstalled,
+        hc_tx,
+        hc_rx,
         find: Find::new(),
     }
 }
@@ -461,14 +471,34 @@ fn grid_size(w: f32, h: f32) -> Size {
 // ───────────────────────────── hooks ─────────────────────────────
 
 fn setup(s: &mut App, waker: Waker) {
-    s.waker = Some(waker);
+    s.waker = Some(waker.clone());
+    start_hc(s, waker);
     if s.tabs.is_empty() && !s.projects.is_empty() {
         s.open_tab(0);
     }
 }
 
+/// Pick how to reach hc. A headless run never dials a real hc: with `CONTR_HC_FAKE` it checks the
+/// fake core at once (a scene cannot wait for a thread), otherwise hc shows as not installed.
+fn start_hc(s: &mut App, waker: Waker) {
+    match Dialer::from_env(rune::is_headless()) {
+        Err(status) => s.hc = status,
+        Ok(d) if rune::is_headless() => s.hc = hc::watch::probe(&d),
+        Ok(d) => {
+            s.hc = HcStatus::Connecting;
+            hc::watch::spawn(d, s.hc_tx.clone(), waker);
+        }
+    }
+}
+
 fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    while let Ok(HcUpdate::Status(status)) = s.hc_rx.try_recv() {
+        if s.hc != status {
+            s.hc = status;
+            changed = true;
+        }
+    }
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
     let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited.load(Ordering::Acquire)).map(|t| t.session.id).collect();
     for id in exited {
