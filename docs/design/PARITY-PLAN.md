@@ -2,6 +2,22 @@
 
 Status: plan, 2026-11-09. Read-only research. Nothing was built, run or changed in either repo.
 
+## Status (2026-11-09)
+
+Every part in §3 is merged (PRs #37–#75), in the four lanes of §4:
+- A: R0 #37, T1 #42, H10 #48, R3a #53, R3b #57, T2 #61, T3 #65, T4 #73.
+- B: A1 #43, H11 #45, A3 #50, A2 #55, A6 #62, A4 #68, A5 #72.
+- C: C5 #47 (+ D173 #75), H13 #56, C7 #63, C8 #69, C4 #70, C6 #74; fix #71 (never overwrite an invalid agents.json).
+- D: D1 #40, D2 #41, D4a #44, D4b #46, D3 #49, D8 #51, D9 #52, D5 #54, D10 #58, D11 #60, D6 #64, D7 #67.
+- Test speed and flakes: #30, #33, #35, #38, #59, #66.
+
+Contract changes found while building (they win over the text below):
+- K6: rune-kit fixes context-menu part names, so menu keys are `<owner>-menu` and `<owner>-item<i>`
+  (`agent/<a>/menu-item0..2`, `add-project/menu-item0..2`, `tab/<i>/menu-item0..1`), not `…/menu/<name>`.
+- K3: the setup wrapper is Go's `withSetup` form (`/bin/sh -c <wrapper> contr-setup <setup> argv…`).
+- D5: the last-words cut is 300 characters (Go `saidMax`), not 160.
+- A4: the `CI` mark shows only for unfinished checks (Go D145), not for failed ones.
+
 ## 0. Which contr is "current" (read first)
 
 The brief names the Swift app at `6be48b6` as the current contr. **It is not.**

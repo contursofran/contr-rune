@@ -22,5 +22,7 @@ marketplace named `contr-rune` (`.claude-plugin/marketplace.json`). The bundled 
 `claude plugin uninstall contr@contr-rune`, `claude plugin marketplace remove contr-rune`,
 `scripts/install-cli.sh --uninstall`.
 
-The plugin reads the marketplace folder in place, so a kit change needs `claude plugin marketplace update
-contr-rune` (or a reinstall) to show up in sessions.
+Claude Code caches an installed plugin by its version. **Raise `version` in `kit/.claude-plugin/plugin.json` in
+every PR that changes `kit/`**, or installed copies keep the old files. To pick up a new version:
+`claude plugin marketplace update contr-rune`, then `claude plugin update contr@contr-rune`. The hooks call the
+`contr-rune` binary, so also reinstall the app (`scripts/bundle-app.sh --install`) when hook commands change.
