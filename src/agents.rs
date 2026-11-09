@@ -228,7 +228,7 @@ pub fn interrupt(conn: &Conn, caller: &str, name: &str) -> Result<String, String
 }
 
 /// One worker by name or address.
-fn get(conn: &Conn, caller: &str, name: &str) -> Result<Worker, String> {
+pub fn get(conn: &Conn, caller: &str, name: &str) -> Result<Worker, String> {
     Ok(Worker::from(&terminal_of(call(conn, "terminal.get", looking(name, caller))?)?))
 }
 
