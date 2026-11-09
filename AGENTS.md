@@ -89,11 +89,14 @@ Make 2 and 3 a lasting integration test under `tests/`, so a later part cannot b
   needs a reason in the PR.
 - No `sleep` and no polling loops. Wait on a state (the tree, the fake log) and keep script end times short.
 - When behaviour changes, change or delete the old tests. Never keep tests for behaviour that is gone.
-- While you work, run only the test file you touch. Run the full suite once, before the PR, through the shared
-  lock so two agents never run tests at the same time:
-  `flock /tmp/contr-rune-tests.lock nice -n 10 cargo test` (`flock` from Homebrew: `brew install flock`).
+- Run locally only the test files you touch (and the unit tests of the modules you touch), through the shared lock
+  so two agents never run tests at the same time:
+  `flock /tmp/contr-rune-tests.lock nice -n 10 cargo test --test <file>` (`flock` from Homebrew: `brew install flock`).
+  Do not run the full suite locally: CI runs it on every PR (`.github/workflows/ci.yml`, macOS runner, about 3x
+  slower than the owner's Mac, so timing races show there first).
 
-Before you open the PR: `cargo build` with no warnings and `cargo test` pass.
+Before you open the PR: `cargo build --all-targets` with no warnings and your test files pass. After you push, wait
+for the PR's CI (`gh pr checks <n> --watch`) and fix it until it is green. A PR is merged only with green CI.
 
 ## Pull requests
 
