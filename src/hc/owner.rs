@@ -54,6 +54,8 @@ pub struct Todo {
     pub from: String,
     pub kind: String,
     pub text: String,
+    /// When it was pinned (RFC 3339, as Go wrote it).
+    pub pinned: String,
     /// When it was done (RFC 3339); Go writes the zero time `0001-01-01…` for an open one.
     pub done: Option<String>,
 }

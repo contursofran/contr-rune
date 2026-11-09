@@ -21,6 +21,8 @@ mod grid;
 mod hc;
 mod keys;
 mod notch;
+mod orchestrator;
+mod outline;
 mod paths;
 mod projects;
 mod prompt;
@@ -164,6 +166,8 @@ struct App {
     plans: usage::Plans,
     /// The terminal text selection (T1).
     select: select::Select,
+    /// The orchestrator outline (H10).
+    outline: outline::State,
 }
 
 fn init() -> App {
@@ -254,6 +258,7 @@ fn init() -> App {
         card: notch::Card::default(),
         plans: usage::Plans::new(),
         select: select::Select::default(),
+        outline: outline::State::default(),
     };
     app.reload_owner(true);
     app
@@ -822,6 +827,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
     }
     changed |= s.plans.poll(s.focused, s.waker.as_ref(), tx);
     s.sync_focus();
+    s.sync_outline();
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
     let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited().load(Ordering::Acquire)).map(|t| t.session.id()).collect();
     for id in exited {
@@ -979,6 +985,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         dialog::build(k, s, &mut layer);
     }
     notch::card(k, s, &mut layer);
+    outline::card(k, s, &mut layer);
     shell::window(k, bar, sidebar::view(k, s, &mut layer), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
         .on_window_focus(|s: &mut App, focused, _tx| {
             s.focused = focused;
