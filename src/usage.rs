@@ -236,8 +236,6 @@ impl Plans {
 }
 
 /// The context window of one agent (`usage/context/<id>.json`).
-// Read by the context meter under the file tree (H13).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Context {
     pub tokens: u64,
@@ -248,7 +246,6 @@ pub struct Context {
     pub effort: String,
 }
 
-#[allow(dead_code)]
 impl Context {
     /// Whole percent of the window used, 0 to 100.
     pub fn percent(&self) -> u64 {
@@ -262,7 +259,6 @@ impl Context {
 }
 
 /// `90k`; `1M` when `n` is a whole number of millions.
-#[allow(dead_code)]
 fn short_tokens(n: u64) -> String {
     if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
         format!("{}M", n / 1_000_000)
@@ -274,7 +270,6 @@ fn short_tokens(n: u64) -> String {
 }
 
 /// The context in a file's text; none for a bad file, another schema or no window size.
-#[allow(dead_code)]
 pub fn parse_context(text: &str) -> Option<Context> {
     #[derive(Deserialize)]
     struct Raw {
@@ -287,7 +282,6 @@ pub fn parse_context(text: &str) -> Option<Context> {
 }
 
 /// The context saved for hc terminal `id`.
-#[allow(dead_code)]
 pub fn read_context(id: &str) -> Option<Context> {
     parse_context(&std::fs::read_to_string(paths::context_file(id)?).ok()?)
 }
