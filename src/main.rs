@@ -22,6 +22,7 @@ mod hc;
 mod keys;
 mod notch;
 mod paths;
+mod projects;
 mod pty;
 mod select;
 mod session;
@@ -163,18 +164,27 @@ struct App {
 
 fn init() -> App {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-    let paths: Vec<PathBuf> = match std::env::var("CONTR_PROJECTS") {
-        Ok(list) => list
+    // `CONTR_PROJECTS` wins; else the saved projects (C5); else the folder we started in and home.
+    let mut saved_selected = None;
+    let paths: Vec<PathBuf> = match std::env::var("CONTR_PROJECTS").ok().filter(|l| !l.is_empty()) {
+        Some(list) => list
             .split(':')
             .filter(|p| !p.is_empty())
             .map(|p| match p.strip_prefix("~/") { Some(rest) => home.join(rest), None => PathBuf::from(p) })
             .filter(|p| p.is_dir())
             .collect(),
-        Err(_) => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
-            if cwd == home { vec![home] } else { vec![cwd, home] }
-        }
+        None => match projects::load() {
+            Some(saved) => {
+                saved_selected = saved.selected;
+                saved.open
+            }
+            None => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
+                if cwd == home { vec![home] } else { vec![cwd, home] }
+            }
+        },
     };
+    let selected_project = saved_selected.and_then(|s| paths.iter().position(|p| *p == s)).unwrap_or(0);
     let projects = paths
         .into_iter()
         .map(|path| Project {
@@ -198,7 +208,7 @@ fn init() -> App {
     let mut app = App {
         projects,
         tabs: Vec::new(),
-        selected_project: 0,
+        selected_project,
         active: None,
         waker: None,
         next_id: 1,
@@ -303,7 +313,7 @@ impl App {
         // The first tab of the selected project shows; else the first one.
         match opened.iter().find(|(_, p)| *p == self.selected_project).or(opened.first()) {
             Some((id, _)) => self.select_tab(*id),
-            None if self.tabs.is_empty() && !self.projects.is_empty() => self.open_tab(0),
+            None if self.tabs.is_empty() && !self.projects.is_empty() => self.open_tab(self.selected_project),
             None => {}
         }
     }
@@ -418,6 +428,15 @@ impl App {
         match last.or_else(|| self.project_tabs(project).next().map(|t| t.session.id())) {
             Some(id) => self.select_tab(id),
             None => { self.split = None; self.active = None; self.find.close(); }
+        }
+        self.save_projects();
+    }
+
+    /// Keep the open projects and the selected one in the projects file (C5).
+    fn save_projects(&mut self) {
+        let open: Vec<&Path> = self.projects.iter().map(|p| p.path.as_path()).collect();
+        if let Err(e) = projects::save(&open, self.projects.get(self.selected_project).map(|p| p.path.as_path())) {
+            self.error = Some(format!("couldn't save the projects: {e}"));
         }
     }
 
@@ -701,7 +720,7 @@ fn setup(s: &mut App, waker: Waker) {
             // With hc the tabs of the last run come back; the listing decides whether a new one opens.
             Some(d) if rune::is_headless() => s.restore_tabs(restore::list(&d)),
             Some(d) => restore::spawn(d, s.hc_tx.clone(), waker),
-            None => s.open_tab(0),
+            None => s.open_tab(s.selected_project),
         }
     }
 }
