@@ -15,17 +15,24 @@
 //! the parts `agent/<address>/menu-menu` and `agent/<address>/menu-item0..2` (Interrupt, Stop, Open
 //! PR; the items carry their label). The actions run off the UI thread; a failure shows in the
 //! error line.
+//!
+//! The Projects `+` opens a menu (A3): `add-project/menu-menu` with `add-project/menu-item0` (New
+//! orchestrator…, the folder picker, then `orchestrator::start`) and `add-project/menu-item1` (Open
+//! folder…). A secondary press on an empty project row opens `project-<i>/menu-menu` with
+//! `project-<i>/menu-item0` ("New orchestrator in <name>"). The spawn runs off the UI thread; the
+//! row comes with the hc `created` event; a failure shows in the error line.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use rune::{Color, Cycle, El, FileDialogOptions, Icon, LoopSpec, PointerPress, el, icon, row, spacer, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarRow};
-use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, MenuItem, Progress, context_menu};
+use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, Menu, MenuItem, Progress, context_menu};
 
 use crate::github as gh;
 use crate::hc::model::{self, Agent, AgentState, Line};
 use crate::hc::{HcUpdate, watch};
+use crate::orchestrator;
 use crate::session::now_ms;
 use crate::theme;
 use crate::{App, PLUS, Project, Status, TERM, shell};
@@ -165,6 +172,11 @@ fn project_row(k: &Kit, s: &App, i: usize, p: &Project) -> El {
         .on_select(move |s: &mut App, _tx| s.select_project(i))
         .build(k)
         .key(format!("project-{i}"))
+        .on_secondary_press(move |s: &mut App, at, _tx| {
+            if s.project_tabs(i).next().is_none() && model::lines(&s.agents, i).is_empty() {
+                s.agent_menu.project = Some((i, at));
+            }
+        })
 }
 
 /// The braille frames of a working glyph, as `main.html`'s `br` keyframes.
@@ -215,12 +227,15 @@ pub fn agent_glyph(k: &Kit, a: &Agent) -> El {
     }
 }
 
-/// The open agent menu (A1): the row it belongs to, where it opened, and whether that agent's
-/// branch has a pull request (`None` until `gh` answered).
+/// The open sidebar menus. The agent menu (A1): the row it belongs to, where it opened, and
+/// whether that agent's branch has a pull request (`None` until `gh` answered). The Projects `+`
+/// menu is open (A3). The menu of an empty project (A3): its index and where it opened.
 #[derive(Default)]
 pub struct AgentMenu {
     open: Option<(String, PointerPress)>,
     has_pr: Option<(String, bool)>,
+    add_open: bool,
+    project: Option<(usize, PointerPress)>,
 }
 
 /// What an agent action reports back to the UI thread.
@@ -242,7 +257,7 @@ enum Action {
 impl App {
     fn open_agent_menu(&mut self, address: String, at: PointerPress) {
         let folder = self.agents.iter().find(|a| a.address == address).and_then(|a| a.folder.clone());
-        self.agent_menu = AgentMenu { open: Some((address.clone(), at)), has_pr: None };
+        self.agent_menu = AgentMenu { open: Some((address.clone(), at)), has_pr: None, ..Default::default() };
         let Some(folder) = folder else { return };
         self.off_ui(move || AgentDone::Pr { address, available: gh::has_pr(&folder) });
     }
@@ -262,6 +277,12 @@ impl App {
                 Action::OpenPr => folder.ok_or_else(|| "the agent has no folder".to_owned()).and_then(|f| gh::open_pr(&f)),
             })
         });
+    }
+
+    /// Start an orchestrator in `dir` (A3), off the UI thread. A failure shows in the error line.
+    fn start_orchestrator(&mut self, dir: PathBuf) {
+        let (dialer, config) = (self.hc_dialer.clone(), crate::paths::agents_config());
+        self.off_ui(move || AgentDone::Action(orchestrator::start(dialer.as_ref(), config, &dir, now_ms() / 1000).map_err(|e| format!("New orchestrator: {e}"))));
     }
 
     /// Run `job` off the UI thread and deliver its result as an update. A headless run cannot wait
@@ -302,6 +323,30 @@ fn agent_menu(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .item(item("Stop", Action::Stop).danger(true))
         .item(item("Open PR", Action::OpenPr).disabled(!pr))
         .on_close(|s: &mut App| s.agent_menu.open = None)
+        .build(k, layer);
+}
+
+/// The folder picker of the Projects `+` menu; `then` gets the folder.
+fn pick_folder(tx: &mut rune::Tx, title: &str, then: fn(&mut App, PathBuf)) {
+    let options = FileDialogOptions { title: title.into(), ..Default::default() };
+    tx.open_folder(options, move |s: &mut App, result, _| match result {
+        Ok(Some(path)) => then(s, path),
+        Ok(None) => {}
+        Err(e) => s.error = Some(format!("couldn't open a folder: {e}")),
+    });
+}
+
+/// The menu of the empty project `i`, mounted in `layer`.
+fn project_menu(k: &Kit, s: &App, layer: &mut Vec<El>) {
+    let Some((i, at)) = s.agent_menu.project else { return };
+    let Some(p) = s.projects.get(i) else { return };
+    let dir = p.path.clone();
+    context_menu(format!("project-{i}/menu"), el(), Some(at))
+        .item(MenuItem::new(format!("New orchestrator in {}", p.name)).on_select(move |s: &mut App| {
+            s.agent_menu.project = None;
+            s.start_orchestrator(dir.clone());
+        }))
+        .on_close(|s: &mut App| s.agent_menu.project = None)
         .build(k, layer);
 }
 
@@ -373,17 +418,24 @@ const PLAN_BAR_WIDTH: f32 = 44.0;
 
 pub fn view(k: &Kit, s: &App, layer: &mut Vec<El>) -> El {
     agent_menu(k, s, layer);
-    let add_project = icon_button(&PLUS, "Open a folder")
-        .on_press_tx(|_: &mut App, tx| {
-            let options = FileDialogOptions { title: "Open a folder".into(), ..Default::default() };
-            tx.open_folder(options, |s: &mut App, result, _| match result {
-                Ok(Some(path)) => s.add_project(path),
-                Ok(None) => {}
-                Err(e) => s.error = Some(format!("couldn't open a folder: {e}")),
+    project_menu(k, s, layer);
+    let plus = icon_button(&PLUS, "Open a folder").on_press(|s: &mut App| s.agent_menu.add_open = true).build(k).key("add-project");
+    let add_project = Menu::new("add-project/menu")
+        .trigger(plus)
+        .open(s.agent_menu.add_open)
+        .item(MenuItem::new("New orchestrator…").on_select_tx(|s: &mut App, tx| {
+            s.agent_menu.add_open = false;
+            pick_folder(tx, "Start an orchestrator in…", |s, path| {
+                s.add_project(path.clone());
+                s.start_orchestrator(path);
             });
-        })
-        .build(k)
-        .key("add-project");
+        }))
+        .item(MenuItem::new("Open folder…").on_select_tx(|s: &mut App, tx| {
+            s.agent_menu.add_open = false;
+            pick_folder(tx, "Open a folder", App::add_project);
+        }))
+        .on_close(|s: &mut App| s.agent_menu.add_open = false)
+        .build(k, layer);
     let mut list = Sidebar::new().label("Projects").inset(0.0).row_gap(2.0).header(section_head(k, "Projects", Some(add_project)));
     for (i, p) in s.projects.iter().enumerate() {
         if i > 0 {

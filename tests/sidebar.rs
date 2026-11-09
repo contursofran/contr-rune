@@ -120,8 +120,8 @@ fn clicking_a_project_selects_its_terminal_or_none() {
 }
 
 #[test]
-fn the_head_plus_adds_a_project_from_the_folder_dialog() {
-    let t = run(vec![tap(0.5, "add-project"), json!({ "t": 0.8, "type": "file-dialog", "path": "{root}/added" })]);
+fn the_head_plus_menu_adds_a_project_from_the_folder_dialog() {
+    let t = run(vec![tap(0.5, "add-project"), tap(0.7, "add-project/menu-item1"), json!({ "t": 0.9, "type": "file-dialog", "path": "{root}/added" })]);
     assert_eq!(t.text_in("project-2", "label").as_deref(), Some("added"));
     assert_eq!(t.text_in("project-2", "detail").as_deref(), Some("nothing open"));
     assert!(t.selected("project-2"), "the new project is selected");
@@ -129,13 +129,13 @@ fn the_head_plus_adds_a_project_from_the_folder_dialog() {
 
 #[test]
 fn cancelling_the_dialog_adds_nothing() {
-    let t = run(vec![tap(0.5, "add-project"), json!({ "t": 0.8, "type": "file-dialog-cancel" })]);
+    let t = run(vec![tap(0.5, "add-project"), tap(0.7, "add-project/menu-item1"), json!({ "t": 0.9, "type": "file-dialog-cancel" })]);
     assert!(!t.has("project-2"));
 }
 
 #[test]
 fn adding_an_existing_folder_selects_it_again() {
-    let t = run(vec![tap(0.5, "add-project"), json!({ "t": 0.8, "type": "file-dialog", "path": "{root}/repo" })]);
+    let t = run(vec![tap(0.5, "add-project"), tap(0.7, "add-project/menu-item1"), json!({ "t": 0.9, "type": "file-dialog", "path": "{root}/repo" })]);
     assert!(!t.has("project-2"), "no second row for the same folder");
     assert_eq!(t.tabs().len(), 3);
 }
