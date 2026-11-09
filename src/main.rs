@@ -1325,5 +1325,8 @@ fn main() {
         ..AppSpec::new("contr", (1280.0, 800.0), init, view)
     };
     // The 38 px title bar is ours; the traffic lights sit in its left area (first circle at x 18, centred).
-    rune::App::new(spec).titlebar(rune::Titlebar::new(TITLEBAR_HEIGHT).traffic_lights(17.0, 12.0)).run();
+    rune::App::new(spec)
+        .titlebar(rune::Titlebar::new(TITLEBAR_HEIGHT).traffic_lights(17.0, 12.0))
+        .on_modifiers(|s: &mut App, mods, _tx| s.select.cmd = mods.cmd)
+        .run();
 }
