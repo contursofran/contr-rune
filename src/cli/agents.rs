@@ -161,7 +161,7 @@ fn parse(sub: &str, args: &[String]) -> Result<Parsed, String> {
 
 /// The task of a spawn: the text, or the content of `file`. Both at once, a missing file and a
 /// file of blanks are errors, so a quoting slip never starts a worker with a wrong brief.
-fn spawn_task(text: &str, file: &str) -> Result<String, String> {
+pub(super) fn spawn_task(text: &str, file: &str) -> Result<String, String> {
     if file.is_empty() {
         return Ok(text.to_owned());
     }
@@ -211,7 +211,7 @@ fn flow_text(env: &Env) -> String {
     }
 }
 
-fn load(env: &Env) -> Result<Config, String> {
+pub(super) fn load(env: &Env) -> Result<Config, String> {
     match &env.config_path {
         Some(path) => Config::load(path),
         None => Err("agents: no home folder to find agents.json in".into()),
