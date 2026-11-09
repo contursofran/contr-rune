@@ -204,7 +204,7 @@ fn braille(color: Color, label: &str) -> El {
 /// `⠿` while it waits, a faint `⠶` at rest. An orchestrator: the Claude mark, turning while it
 /// works or waits, dim at rest. Red only for an agent that needs you. The element is keyed `glyph`
 /// and says its state in its label (`needs you`, `working`, `waiting`, `idle`).
-pub fn agent_glyph(k: &Kit, a: &Agent) -> El {
+pub fn agent_glyph(k: &Kit, a: &Agent, orchestrates: bool) -> El {
     let word = match a.state {
         AgentState::NeedsYou { .. } => "needs you",
         AgentState::Working => "working",
@@ -212,11 +212,13 @@ pub fn agent_glyph(k: &Kit, a: &Agent) -> El {
         AgentState::Idle | AgentState::Ended => "idle",
     };
     if a.is_orchestrator() {
+        // A session that does not orchestrate draws the mark grey (D191).
+        let hue = if orchestrates { theme::claude_color() } else { k.c.text_faint };
         let mark = icon(&CLAUDE, 16.0).key("glyph").label(word.to_owned());
         return match a.state {
             AgentState::NeedsYou { .. } => mark.color(k.c.danger.icon),
-            AgentState::Working | AgentState::Waiting => mark.color(theme::claude_color()).looping(LoopSpec::rotation(2.4)),
-            AgentState::Idle | AgentState::Ended => mark.color(theme::claude_color()).opacity(0.45),
+            AgentState::Working | AgentState::Waiting => mark.color(hue).looping(LoopSpec::rotation(2.4)),
+            AgentState::Idle | AgentState::Ended => mark.color(hue).opacity(0.45),
         };
     }
     match a.state {
@@ -225,6 +227,12 @@ pub fn agent_glyph(k: &Kit, a: &Agent) -> El {
         AgentState::Waiting => text("⠿").key("glyph").label(word.to_owned()).font(theme::GLYPH).color(k.c.text_base).looping(LoopSpec::opacity(1.6, 0.0, 0.25, 1.0)),
         AgentState::Idle | AgentState::Ended => text("⠶").key("glyph").label(word.to_owned()).font(theme::GLYPH).color(k.c.text_faint),
     }
+}
+
+/// The mark of a plain terminal that runs Claude (D190): always grey, turning while it works.
+pub fn plain_claude_glyph(k: &Kit, working: bool) -> El {
+    let mark = icon(&CLAUDE, 16.0).key("glyph").label(if working { "working" } else { "idle" }.to_owned()).color(k.c.text_faint);
+    if working { mark.looping(LoopSpec::rotation(2.4)) } else { mark.opacity(0.45) }
 }
 
 /// The open sidebar menus. The agent menu (A1): the row it belongs to, where it opened, and
@@ -358,7 +366,7 @@ fn agent_row(k: &Kit, s: &App, line: &Line) -> El {
         meta.push_str("  CI");
     }
     let row = SidebarRow::new(s.gh.title(&a.address).unwrap_or(a.display_title()).to_owned())
-        .avatar(agent_glyph(k, a))
+        .avatar(agent_glyph(k, a, a.orchestrates(&s.agents)))
         .subtitle(meta)
         .subtitle_style(theme::META)
         .title_style(theme::BODY)
