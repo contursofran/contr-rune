@@ -82,7 +82,20 @@ fn a_worker_that_reported_is_only_labelled() {
 fn a_session_that_is_not_a_worker_is_labelled_and_sends_nothing() {
     let o = stop("session", &[PROMPT, SAY], false, json!({"last_assistant_message": "x"}));
     assert_eq!(o.code, 0);
-    assert_eq!(o.calls, [json!({"method": "terminal.label", "params": {"terminal": "t3", "labels": {"contr.model": "sonnet"}}})]);
+    assert_eq!(o.calls, [json!({"method": "terminal.label", "params": {"terminal": "t3", "labels": {"contr.model": "sonnet", "contr.context": ""}}})]);
+}
+
+#[test]
+fn a_session_that_is_not_a_worker_gets_the_context_and_orchestrating_labels_in_one_call() {
+    let usage = r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":200,"cache_creation_input_tokens":3000}}}"#;
+    let ran = r#"{"type":"user","message":{"content":"<command-name>/contr:orchestrate</command-name> go"}}"#;
+    let o = stop("context", &[PROMPT, ran, usage], false, json!({}));
+    assert_eq!((o.code, o.err.as_str()), (0, ""));
+    let labels = json!({"contr.model": "sonnet", "contr.context": "3210", "contr.context-limit": "250000", "contr.orchestrating": "1"});
+    assert_eq!(o.calls, [json!({"method": "terminal.label", "params": {"terminal": "t3", "labels": labels}})]);
+    // No usage yet: the context label is cleared.
+    let o = stop("nocontext", &[PROMPT, SAY], false, json!({}));
+    assert_eq!(o.calls, [json!({"method": "terminal.label", "params": {"terminal": "t3", "labels": {"contr.model": "sonnet", "contr.context": ""}}})]);
 }
 
 #[test]
