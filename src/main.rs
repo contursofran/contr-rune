@@ -29,6 +29,7 @@ mod prompt;
 mod pty;
 mod select;
 mod session;
+mod session_file;
 mod settings;
 mod settings_agents;
 mod shell;

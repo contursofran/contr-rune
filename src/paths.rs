@@ -57,12 +57,10 @@ pub fn sanitize_id(id: &str) -> String {
 }
 
 /// `<state>/session/<id>.json`.
-#[allow(dead_code)] // used by D7 (session file) and D10 (context file)
 pub fn session_file(id: &str) -> Option<PathBuf> {
     session_file_in(&real_env, id)
 }
 
-#[allow(dead_code)] // used by D7 (session file) and D10 (context file)
 pub fn session_file_in(env: Env, id: &str) -> Option<PathBuf> {
     Some(state_dir_in(env)?.join("session").join(format!("{}.json", sanitize_id(id))))
 }
