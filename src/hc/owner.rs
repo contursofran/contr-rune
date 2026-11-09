@@ -452,7 +452,7 @@ impl OwnerSource for OwnerFile {
 }
 
 /// The current time as RFC 3339 in UTC, to the second (what Go's `time.Time` parses).
-fn rfc3339_now() -> String {
+pub(crate) fn rfc3339_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
