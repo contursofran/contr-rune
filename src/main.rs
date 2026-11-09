@@ -7,7 +7,7 @@
 //! folder and home). Shortcuts: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Tab /
 //! Ctrl+Shift+Tab or Ctrl+PageDown / PageUp switch, Ctrl+Shift+V paste (⌘ on macOS), Ctrl+Shift+F find
 //! (⌘F; ⌘G / ⌘⇧G or Return / Shift+Return step, esc closes), Ctrl+Shift+D split (⌘D), Ctrl+Shift+[ / ]
-//! focus the left / right pane (⌘[ / ⌘]).
+//! focus the left / right pane (⌘[ / ⌘]), Ctrl+Shift+J the questions card (⌘J).
 
 mod dialog;
 mod diff;
@@ -16,6 +16,7 @@ mod find;
 mod grid;
 mod hc;
 mod keys;
+mod notch;
 mod pty;
 mod session;
 mod settings;
@@ -26,6 +27,7 @@ mod theme;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -40,6 +42,7 @@ use files::{Change, Kind, Scan};
 use find::Find;
 use hc::term::{HcSession, Ownership, Spec as HcSpec};
 use hc::model::{self, Agent};
+use hc::owner::{OwnerFile, OwnerSource, OwnerState};
 use hc::restore;
 use hc::{Dialer, HcStatus, HcUpdate};
 use pty::Pty;
@@ -50,6 +53,9 @@ use theme::*;
 
 /// The diff summary is refreshed at most this often (a new project selection refreshes at once).
 const DIFF_EVERY: Duration = Duration::from_secs(3);
+
+/// How often `owner.json` is checked for changes while the window has the focus.
+const OWNER_EVERY: Duration = Duration::from_secs(1);
 
 /// Output within this long ago makes a terminal "working".
 const WORKING_MS: u64 = 1_500;
@@ -134,6 +140,12 @@ struct App {
     agents_minute: u64,
     /// The agent row that is selected (its address). Showing its terminal comes in H8.
     selected_agent: Option<String>,
+    /// The owner's questions and to-dos (`owner.json`, shared with Go contr), what was last read from
+    /// it, when that file was last changed, and the card that shows them (H9).
+    owner: Option<Arc<dyn OwnerSource>>,
+    owner_state: OwnerState,
+    owner_stamp: Option<std::time::SystemTime>,
+    card: notch::Card,
 }
 
 fn init() -> App {
@@ -165,7 +177,12 @@ fn init() -> App {
         Ok(d) => (Some(d), HcStatus::Connecting),
         Err(status) => (None, status),
     };
-    App {
+    // A headless run reads only the file it is given: never the owner's real one.
+    let owner: Option<Arc<dyn OwnerSource>> = match OwnerFile::from_env() {
+        Some(f) if !rune::is_headless() || std::env::var_os("CONTR_OWNER_FILE").is_some() => Some(Arc::new(f)),
+        _ => None,
+    };
+    let mut app = App {
         projects,
         tabs: Vec::new(),
         selected_project: 0,
@@ -203,7 +220,13 @@ fn init() -> App {
         agents_minute: 0,
         selected_agent: None,
         find: Find::new(),
-    }
+        owner,
+        owner_state: OwnerState::default(),
+        owner_stamp: None,
+        card: notch::Card::default(),
+    };
+    app.reload_owner(true);
+    app
 }
 
 impl App {
@@ -718,6 +741,7 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
             }
             HcUpdate::Restore(listed) => s.restore_tabs(listed),
             HcUpdate::Terminals { terminals, stamps } => s.set_terminals(terminals, stamps),
+            HcUpdate::Told(result) => s.told(result),
         }
         changed = true;
     }
@@ -730,6 +754,11 @@ fn poll(s: &mut App, _t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::from_secs(30));
     }
     changed |= hc_fallbacks(s);
+    // The owner's file: look at it every second while the window has the focus, and not at all otherwise.
+    if s.focused && s.owner.is_some() {
+        changed |= s.reload_owner(false);
+        tx.wake_after(OWNER_EVERY);
+    }
     s.sync_focus();
     // Shells that exited (`exit`, Ctrl+D) close their tab, as in contr.
     let exited: Vec<u64> = s.tabs.iter().filter(|t| t.session.exited().load(Ordering::Acquire)).map(|t| t.session.id()).collect();
@@ -804,6 +833,13 @@ fn is_shortcut(ev: &KeyEvent, c: char) -> bool {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if notch::key(s, ev) {
+        return true;
+    }
+    if is_shortcut(ev, 'j') {
+        s.toggle_card();
+        return true;
+    }
     if s.find_key(ev, tx) {
         return true;
     }
@@ -876,8 +912,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     if s.settings_open {
         dialog::build(k, s, &mut layer);
     }
+    notch::card(k, s, &mut layer);
     shell::window(k, bar, sidebar::view(k, s), terminal_panel(k, s), s.show_files.then(|| files_panel(k, s)), layer)
-        .on_window_focus(|s: &mut App, focused, _tx| s.focused = focused)
+        .on_window_focus(|s: &mut App, focused, _tx| {
+            s.focused = focused;
+            // Coming back: the file may have changed meanwhile.
+            if focused { s.reload_owner(false); }
+        })
 }
 
 fn label(t: impl Into<String>, style: rune::tok::TextStyle, color: Color) -> El {
@@ -1084,6 +1125,14 @@ fn file_tree(k: &Kit, s: &App) -> El {
 }
 
 fn terminal_panel(k: &Kit, s: &App) -> El {
+    let panel = terminal_panel_body(k, s);
+    match notch::notch(k, s) {
+        Some(n) => panel.child(n),
+        None => panel,
+    }
+}
+
+fn terminal_panel_body(k: &Kit, s: &App) -> El {
     let c = &k.c;
     let Some(t) = s.active_tab() else {
         return shell::terminal_panel(k).center().gap(8.0)
@@ -1328,6 +1377,14 @@ fn main() {
                 s.toggle_split();
                 if let Some(t) = s.active_tab() { t.session.write(FIND_DEMO.as_bytes()); }
                 s.refresh_diff_now();
+            }),
+            // The questions card open over a shell (`CONTR_OWNER_FILE`, and `CONTR_HC_FAKE` for blocked agents).
+            ("questions", |s| {
+                s.open_tab(0);
+                s.refresh_diff_now();
+                s.card.open = true;
+                // The tab of the first question, after the blocked agent of the fake core's fixture.
+                s.card.tab = 1;
             }),
             // One shell with known text, the find bar closed (the tests type the query).
             ("find-text", |s| {

@@ -12,6 +12,7 @@ pub mod dial;
 pub mod fake;
 pub mod framed;
 pub mod model;
+pub mod owner;
 pub mod restore;
 pub mod term;
 pub mod watch;

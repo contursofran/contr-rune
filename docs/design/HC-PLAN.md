@@ -204,7 +204,7 @@ has a live child that is working → `Idle` otherwise → `Ended` if `state == f
   DATA input back as output. Fixtures live in `tests/fixtures/hc/`.
 - Element keys: `version/hc/value`; tabs keep `tab/<i>` and `term-<id>`; `agent/<address>`, `agent/<address>/glyph`,
   `agent/<address>/meta`, `agent/<address>/age`; `notch`, `notch/label`; `qcard`, `qcard/item/<ID>`,
-  `qcard/option/<ID>/<i>`, `qcard/input`, `qcard/send`, `qcard/done/<ID>`, `qcard/error`; `outline`,
+  `qcard/option/<ID>/<i>` (i = position as shown, the recommended one is 0), `qcard/tabs`, `qcard/open/<address>`, `qcard/input`, `qcard/send`, `qcard/done/<ID>`, `qcard/error`; `outline`,
   `outline/tick/<ID>`, `outline/count`, `outline/card`; `meter/context`, `meter/claude`, `meter/codex`; `hc-banner`
   (connection problem line).
 
