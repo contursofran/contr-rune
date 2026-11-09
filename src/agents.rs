@@ -293,7 +293,7 @@ pub fn pending_prompt(conn: &Conn, caller: &str, name: &str) -> Result<String, S
     let Some(p) = prompt::parse(&w.command, &w.kind, &screen) else { return Ok(NO_PROMPT.into()) };
     let mut out: Vec<String> = p.detail;
     out.push(p.question);
-    out.extend(p.choices.iter().enumerate().map(|(i, c)| format!("{}. {c}", i + 1)));
+    out.extend(p.choices.iter().enumerate().map(|(i, c)| format!("{}. {}", i + 1, c.label)));
     Ok(out.join("\n").trim_end_matches('\n').to_owned())
 }
 

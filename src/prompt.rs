@@ -1,6 +1,7 @@
 //! The menu a blocked worker shows on its terminal (port of go:internal/prompt). Pure: it takes
 //! screen text and returns the question and the numbered choices. Choice `n` (from 1) is picked
-//! with the digit key `n`.
+//! with the digit key `n`; Enter is not added. A `text` choice asks for typed follow-up text, so
+//! the card must not press its key.
 
 use std::path::Path;
 
@@ -16,7 +17,14 @@ pub struct Prompt {
     /// command). Empty when the menu has no box or separator above it.
     pub detail: Vec<String>,
     pub question: String,
-    pub choices: Vec<String>,
+    pub choices: Vec<Choice>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choice {
+    pub label: String,
+    /// The choice asks the owner for typed text (`Tell Claude what to do differently`).
+    pub text: bool,
 }
 
 /// The last menu on `screen`. `command` is the worker's program, `kind` the blocked kind
@@ -30,7 +38,8 @@ pub fn parse(command: &str, kind: &str, screen: &str) -> Option<Prompt> {
     if !matches!(program.to_str(), Some("claude" | "codex")) {
         return None;
     }
-    parse_menu(screen)
+    let marks: &[&str] = if program.to_str() == Some("claude") { &["tell claude", "type something", "chat about this"] } else { &["tell codex"] };
+    parse_menu(screen, marks)
 }
 
 /// `N. label`: `(N, label)`.
@@ -55,8 +64,13 @@ fn clean(line: &str) -> &str {
     line.trim()
 }
 
+fn choice(label: &str, text_marks: &[&str]) -> Choice {
+    let lower = label.to_lowercase();
+    Choice { label: label.to_owned(), text: text_marks.iter().any(|m| lower.contains(m)) }
+}
+
 /// The last run of numbered items that counts up from 1, with the nearest text line above it.
-fn parse_menu(screen: &str) -> Option<Prompt> {
+fn parse_menu(screen: &str, text_marks: &[&str]) -> Option<Prompt> {
     let raw: Vec<&str> = screen.split('\n').collect();
     let lines: Vec<&str> = raw.iter().map(|l| clean(l)).collect();
     let items: Vec<(usize, usize, &str)> = lines.iter().enumerate().filter_map(|(i, l)| item(l).map(|(n, label)| (i, n, label))).collect();
@@ -75,7 +89,7 @@ fn parse_menu(screen: &str) -> Option<Prompt> {
     let q = (0..run[0].0).rev().find(|&i| !lines[i].is_empty());
     let question = q.map(|i| lines[i].to_owned()).unwrap_or_default();
     let detail = q.filter(|&q| q > 0).map(|q| detail(&raw, &lines, q)).unwrap_or_default();
-    Some(Prompt { detail, question, choices: run.iter().map(|r| r.2.to_owned()).collect() })
+    Some(Prompt { detail, question, choices: run.iter().map(|r| choice(r.2, text_marks)).collect() })
 }
 
 /// The cleaned lines between the top of the menu's box (a `╭` line or a line of `─`) and the
@@ -101,7 +115,18 @@ mod tests {
     const PERMISSION: &str = "● Running tests\n\n╭──────────────────────────────╮\n│ Bash command                 │\n│   cargo test                 │\n│                              │\n│ Do you want to proceed?      │\n│ ❯ 1. Yes                     │\n│   2. Yes, and don't ask again │\n│   3. No, and tell Claude what to do differently │\n╰──────────────────────────────╯\n";
 
     fn menu(detail: &[&str], question: &str, choices: &[&str]) -> Option<Prompt> {
-        Some(Prompt { detail: detail.iter().map(|s| (*s).into()).collect(), question: question.into(), choices: choices.iter().map(|s| (*s).into()).collect() })
+        Some(Prompt { detail: detail.iter().map(|s| (*s).into()).collect(), question: question.into(), choices: choices.iter().map(|s| Choice { label: (*s).into(), text: s.contains("tell Claude") }).collect() })
+    }
+
+    #[test]
+    fn marks_the_choices_that_ask_for_typed_text() {
+        let screen = "Proceed?\n1. Yes\n2. No, and Tell Claude what to do\n3. Type something.\n";
+        let p = parse("claude", "permission", screen).unwrap();
+        assert_eq!(p.choices.iter().map(|c| c.text).collect::<Vec<_>>(), [false, true, true]);
+        let p = parse("codex", "permission", screen).unwrap();
+        assert_eq!(p.choices.iter().map(|c| c.text).collect::<Vec<_>>(), [false, false, false], "codex has its own marks");
+        let p = parse("codex", "permission", "Ok?\n1. Yes\n2. No, tell codex why\n").unwrap();
+        assert!(p.choices[1].text);
     }
 
     #[test]

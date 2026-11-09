@@ -82,6 +82,12 @@ pub enum HcUpdate {
     Terminals { terminals: Vec<Terminal>, stamps: HashMap<String, u64> },
     /// The outcome of telling a coordinator terminal about the owner's answer (`send_text`).
     Told(Result<(), String>),
+    /// A blocked agent's screen read for the card (A2); `stamp` is what the agent's status looked
+    /// like when the read began.
+    Menu { address: String, stamp: String, screen: Result<String, String> },
+    /// The outcome of choosing in a blocked agent's menu (A2): `Ok(None)` when the keys went,
+    /// `Ok(Some(screen))` when the menu had changed and nothing was sent.
+    Chose { address: String, result: Result<Option<String>, String> },
     /// The outcome of an agent row action (A1).
     Agent(crate::sidebar::AgentDone),
 }
@@ -301,6 +307,26 @@ pub fn send_text(d: &Dialer, terminal: &str, text: &str) -> Result<(), String> {
     let conn = Conn::new(link.reader, link.writer, None);
     handshake(&conn, false)?;
     conn.call("terminal.send", json!({"terminal": terminal, "text": text}), CALL).map_err(|e| e.to_string())?;
+    drop(link.keep);
+    Ok(())
+}
+
+/// `terminal.read` of the last `lines` lines of `terminal`'s screen, on a short-lived connection.
+pub fn read_screen(d: &Dialer, terminal: &str, lines: u32) -> Result<String, String> {
+    let link = d.dial().map_err(|e| e.to_string())?;
+    let conn = Conn::new(link.reader, link.writer, None);
+    handshake(&conn, false)?;
+    let reply = conn.call("terminal.read", json!({"terminal": terminal, "lines": lines}), CALL).map_err(|e| e.to_string())?;
+    drop(link.keep);
+    Ok(reply["text"].as_str().unwrap_or_default().to_owned())
+}
+
+/// `terminal.keys` of the key names `keys` to `terminal`, on a short-lived connection.
+pub fn press_keys(d: &Dialer, terminal: &str, keys: &[String]) -> Result<(), String> {
+    let link = d.dial().map_err(|e| e.to_string())?;
+    let conn = Conn::new(link.reader, link.writer, None);
+    handshake(&conn, false)?;
+    conn.call("terminal.keys", json!({"terminal": terminal, "keys": keys}), CALL).map_err(|e| e.to_string())?;
     drop(link.keep);
     Ok(())
 }
