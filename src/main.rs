@@ -369,6 +369,7 @@ impl App {
         self.hc_terminals = terminals;
         self.hc_stamps = stamps;
         self.refresh_agents();
+        self.sync_menu();
     }
 
     /// Derive the agents from the terminal list. An agent whose project is not open opens it when
@@ -812,6 +813,7 @@ fn poll_app(s: &mut App, tx: &mut Tx) -> bool {
             HcUpdate::Restore(listed) => s.restore_tabs(listed),
             HcUpdate::Terminals { terminals, stamps } => s.set_terminals(terminals, stamps),
             HcUpdate::Told(result) => s.told(result),
+            update @ (HcUpdate::Menu { .. } | HcUpdate::Chose { .. }) => s.card_update(update),
             HcUpdate::Agent(done) => s.agent_done(done),
         }
         changed = true;

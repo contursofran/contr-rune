@@ -2,7 +2,17 @@
 //! keep the newer version (if any) for the title-bar pill, the toast and the Settings row.
 //! `CONTR_UPDATE_URL` points the check at another URL (a `file://` JSON in tests); a headless run
 //! without it makes no check and never touches the network.
+//!
+//! The install (R3b, "Restart now"): download the zip, its `.sha256` and its `.sig` from the release,
+//! check the sha256 (the download is whole) and the ed25519 signature (the release is ours), unzip
+//! with `ditto`, then a detached `/bin/sh` helper (`scripts/update-helper.sh`) waits for this
+//! process to exit, swaps the `.app` and opens it. Any error shows in Settings (`update/error`).
+//! With `CONTR_UPDATE_URL` the assets come from the folder of that URL, `CONTR_UPDATE_PUBKEY` (hex)
+//! replaces the public key, and `CONTR_UPDATE_DRY=1` stops after the unzip, before any swap.
 
+use std::ffi::OsString;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -13,6 +23,12 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit, Placement, Toast, ToastR
 use crate::App;
 
 const LATEST_URL: &str = "https://api.github.com/repos/contursofran/contr-rune/releases/latest";
+const DOWNLOADS: &str = "https://github.com/contursofran/contr-rune/releases/download";
+const ZIP: &str = "contr-rune-macos-arm64.zip";
+/// The public key (ed25519, 32 bytes in hex) the release zips are verified with.
+const PUBKEY: &str = "fb476085368fa7f9529fe4a7380b82038e1e712df208d398624e671ce58bcf1f";
+/// The helper script, run by `/bin/sh -c` once this process has exited.
+const HELPER: &str = include_str!("../scripts/update-helper.sh");
 /// The running version.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// How often the window checks while it is visible.
@@ -107,6 +123,143 @@ fn fetch(url: &str) -> Found {
     out.status.success().then(|| parse_release(&String::from_utf8_lossy(&out.stdout))).flatten()
 }
 
+/// How far "Restart now" got.
+#[derive(Debug, Clone, PartialEq)]
+enum Install {
+    Idle,
+    Working,
+    /// A dry run (`CONTR_UPDATE_DRY`) downloaded, verified and unzipped the update.
+    Verified,
+    Failed(String),
+}
+
+/// How an install ended without error.
+#[derive(Debug, PartialEq)]
+enum Installed {
+    /// The helper runs: this app must quit now.
+    Swapping,
+    Verified,
+}
+
+fn hex32(hex: &str) -> Option<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// The key to verify with: the embedded one (`CONTR_UPDATE_PUBKEY` replaces it only next to `CONTR_UPDATE_URL`).
+fn pubkey() -> Result<[u8; 32], String> {
+    let hex = match (std::env::var("CONTR_UPDATE_URL"), std::env::var("CONTR_UPDATE_PUBKEY")) {
+        (Ok(u), Ok(k)) if !u.is_empty() && !k.is_empty() => k,
+        _ => PUBKEY.to_owned(),
+    };
+    hex32(&hex).ok_or_else(|| "The update key is not valid.".to_owned())
+}
+
+/// Whether `sig` (the raw 64 bytes `openssl pkeyutl -sign -rawin` writes) is `key`'s signature of `data`.
+fn verify_signature(key: &[u8; 32], data: &[u8], sig: &[u8]) -> Result<(), String> {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    let bad = || "The update's signature does not match; it was not installed.".to_owned();
+    let sig = Signature::from_slice(sig).map_err(|_| bad())?;
+    let key = VerifyingKey::from_bytes(key).map_err(|_| "The update key is not valid.".to_owned())?;
+    key.verify_strict(data, &sig).map_err(|_| bad())
+}
+
+/// Whether the digest (hex) is the first word of a `shasum -a 256` line.
+fn check_sha256(digest: &str, sha_file: &str) -> Result<(), String> {
+    match sha_file.split_whitespace().next() {
+        Some(want) if want.eq_ignore_ascii_case(digest) => Ok(()),
+        _ => Err("The download is damaged (checksum mismatch); it was not installed.".to_owned()),
+    }
+}
+
+/// The `.app` that holds this executable (`X.app/Contents/MacOS/bin`), if any.
+fn app_path(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let app = macos.parent()?.parent()?;
+    (macos.file_name()? == "MacOS" && app.extension()? == "app").then(|| app.to_path_buf())
+}
+
+/// Where the release assets are: the folder of `CONTR_UPDATE_URL`, else the release's download URL.
+fn asset_base(update_url: Option<&str>, tag: &str) -> String {
+    match update_url {
+        Some(u) if !u.is_empty() => u.rsplit_once('/').map_or(u, |(dir, _)| dir).to_owned(),
+        _ => format!("{DOWNLOADS}/{tag}"),
+    }
+}
+
+/// The arguments of `/bin/sh` that run the helper for `pid`, the unzipped app, the installed app and the work folder.
+fn helper_args(pid: u32, new_app: &Path, app: &Path, work: &Path) -> Vec<OsString> {
+    vec!["-c".into(), HELPER.into(), "sh".into(), pid.to_string().into(), new_app.into(), app.into(), work.into()]
+}
+
+fn download(url: &str, to: &Path) -> Result<(), String> {
+    let status = Command::new("/usr/bin/curl")
+        .args(["-fsSL", "--max-time", "300", "-o"])
+        .arg(to)
+        .arg(url)
+        .stdin(Stdio::null())
+        .status()
+        .map_err(|e| format!("Could not download the update: {e}"))?;
+    status.success().then_some(()).ok_or_else(|| format!("Could not download {url}."))
+}
+
+fn sha256_of(file: &Path) -> Result<String, String> {
+    let out = Command::new("/usr/bin/shasum").args(["-a", "256"]).arg(file).stdin(Stdio::null()).output().map_err(|e| format!("Could not check the download: {e}"))?;
+    let line = String::from_utf8_lossy(&out.stdout);
+    line.split_whitespace().next().filter(|_| out.status.success()).map(str::to_owned).ok_or_else(|| "Could not check the download.".to_owned())
+}
+
+/// Download, verify and unzip the release `tag` into `work`; returns the new app.
+fn prepare(tag: &str, work: &Path) -> Result<PathBuf, String> {
+    let io = |e: std::io::Error| format!("Could not prepare the update: {e}");
+    let base = asset_base(std::env::var("CONTR_UPDATE_URL").ok().as_deref(), tag);
+    let (zip, sha, sig) = (work.join(ZIP), work.join(format!("{ZIP}.sha256")), work.join(format!("{ZIP}.sig")));
+    for (path, name) in [(&zip, ZIP.to_owned()), (&sha, format!("{ZIP}.sha256")), (&sig, format!("{ZIP}.sig"))] {
+        download(&format!("{base}/{name}"), path)?;
+    }
+    check_sha256(&sha256_of(&zip)?, &std::fs::read_to_string(&sha).map_err(io)?)?;
+    verify_signature(&pubkey()?, &std::fs::read(&zip).map_err(io)?, &std::fs::read(&sig).map_err(io)?)?;
+    let unzipped = work.join("unzipped");
+    let ok = Command::new("/usr/bin/ditto").args(["-x", "-k"]).arg(&zip).arg(&unzipped).stdin(Stdio::null()).status().is_ok_and(|s| s.success());
+    let app = unzipped.join("contr-rune.app");
+    (ok && app.is_dir()).then_some(app).ok_or_else(|| "The update zip does not hold contr-rune.app.".to_owned())
+}
+
+/// The whole install of release `tag` (blocking): see the module doc.
+fn install(tag: &str) -> Result<Installed, String> {
+    let dry = std::env::var("CONTR_UPDATE_DRY").is_ok_and(|v| !v.is_empty());
+    let exe = std::env::current_exe().map_err(|e| format!("Could not find the running app: {e}"))?;
+    let app = app_path(&exe);
+    if app.is_none() && !dry {
+        return Err("contr-rune does not run from an app bundle, so it cannot replace itself. Download the update from GitHub.".to_owned());
+    }
+    let work = std::env::temp_dir().join(format!("contr-rune-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).map_err(|e| format!("Could not prepare the update: {e}"))?;
+    let prepared = prepare(tag, &work);
+    let (Some(app), Ok(new_app), false) = (app, &prepared, dry) else {
+        let _ = std::fs::remove_dir_all(&work);
+        return prepared.map(|_| Installed::Verified);
+    };
+    // The helper removes `work` when it is done.
+    Command::new("/bin/sh")
+        .args(helper_args(std::process::id(), new_app, &app, &work))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("Could not start the updater: {e}"))?;
+    Ok(Installed::Swapping)
+}
+
 /// The update state of the app.
 pub struct Updater {
     /// The newer release found by the last good check.
@@ -122,9 +275,11 @@ pub struct Updater {
     toasted: Option<String>,
     pub toast: bool,
     pub panel: bool,
-    /// "Restart now" was chosen. R3b downloads and swaps the app from here.
-    #[allow(dead_code)]
+    /// "Restart now" was chosen and waits for `poll` (it has the waker).
     restart_wanted: bool,
+    install: Install,
+    done_tx: Sender<Result<Installed, String>>,
+    done_rx: Receiver<Result<Installed, String>>,
     tx: Sender<Found>,
     rx: Receiver<Found>,
 }
@@ -132,6 +287,7 @@ pub struct Updater {
 impl Updater {
     pub fn new() -> Updater {
         let (tx, rx) = channel();
+        let (done_tx, done_rx) = channel();
         Updater {
             ready: None,
             checked: false,
@@ -143,6 +299,9 @@ impl Updater {
             toast: false,
             panel: false,
             restart_wanted: false,
+            install: Install::Idle,
+            done_tx,
+            done_rx,
             tx,
             rx,
         }
@@ -200,6 +359,7 @@ impl Updater {
         while let Ok(found) = self.rx.try_recv() {
             changed |= self.accept(found);
         }
+        changed |= self.poll_install(waker, tx);
         let Some(url) = url() else { return changed };
         let due = self.last_try.is_none_or(|t| t.elapsed() >= EVERY);
         if !self.inflight && (self.wanted || (focused && due)) {
@@ -218,16 +378,62 @@ impl Updater {
         changed
     }
 
-    /// "Restart now": the seam R3b fills (download, verify, swap, relaunch).
+    /// "Restart now": the next `poll` starts the install.
     pub fn restart(&mut self) {
-        self.restart_wanted = true;
+        self.restart_wanted = self.ready.is_some() && self.install != Install::Working;
         self.toast = false;
         self.panel = false;
+    }
+
+    /// Take the end of an install (quit when the helper runs) and start one that was asked for. A
+    /// headless run cannot wait for a thread, so it installs at once.
+    fn poll_install(&mut self, waker: Option<&Waker>, tx: &mut Tx) -> bool {
+        let mut changed = false;
+        while let Ok(done) = self.done_rx.try_recv() {
+            changed = true;
+            self.install = match done {
+                Ok(Installed::Swapping) => {
+                    tx.quit();
+                    Install::Working
+                }
+                Ok(Installed::Verified) => Install::Verified,
+                Err(e) => Install::Failed(e),
+            };
+        }
+        if !std::mem::take(&mut self.restart_wanted) {
+            return changed;
+        }
+        let Some(release) = &self.ready else { return changed };
+        let tag = format!("v{}", release.version);
+        self.install = Install::Working;
+        if rune::is_headless() {
+            let _ = self.done_tx.send(install(&tag));
+            self.poll_install(waker, tx);
+            return true;
+        }
+        let (out, waker) = (self.done_tx.clone(), waker.cloned());
+        std::thread::spawn(move || {
+            let _ = out.send(install(&tag));
+            if let Some(w) = &waker {
+                w();
+            }
+        });
+        true
+    }
+
+    /// Why the last "Restart now" failed, for Settings.
+    pub fn error(&self) -> Option<&str> {
+        match &self.install {
+            Install::Failed(e) => Some(e),
+            _ => None,
+        }
     }
 
     /// The Settings value after the app's version.
     pub fn status(&self) -> String {
         match (&self.ready, self.checked) {
+            (Some(r), _) if self.install == Install::Working => format!("{CURRENT} \u{b7} installing {}\u{2026}", r.version),
+            (Some(r), _) if self.install == Install::Verified => format!("{CURRENT} \u{b7} {} verified (dry run)", r.version),
             (Some(r), _) => format!("{CURRENT} \u{b7} {} available", r.version),
             (None, true) => format!("{CURRENT} \u{b7} up to date"),
             (None, false) => CURRENT.to_owned(),
@@ -318,6 +524,69 @@ mod tests {
         for bad in ["", "not json", "{}", r#"{"tag_name":"nightly"}"#, r#"{"tag_name":"v2.0.0","draft":true}"#, r#"{"tag_name":"v2.0.0","prerelease":true}"#] {
             assert_eq!(parse_release(bad), None, "{bad:?}");
         }
+    }
+
+    /// A key pair from a fixed seed (never the release key) and its signature of `data`.
+    fn signed(data: &[u8]) -> ([u8; 32], Vec<u8>) {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk = SigningKey::from_bytes(&[7; 32]);
+        (sk.verifying_key().to_bytes(), sk.sign(data).to_bytes().to_vec())
+    }
+
+    #[test]
+    fn a_signature_must_match_the_zip_and_the_key() {
+        let (key, sig) = signed(b"the zip");
+        assert_eq!(verify_signature(&key, b"the zip", &sig), Ok(()));
+        assert!(verify_signature(&key, b"the zip, tampered", &sig).is_err(), "tampered data");
+        let mut flipped = sig.clone();
+        flipped[10] ^= 1;
+        assert!(verify_signature(&key, b"the zip", &flipped).is_err(), "tampered signature");
+        assert!(verify_signature(&key, b"the zip", &[]).is_err(), "missing signature");
+        assert!(verify_signature(&key, b"the zip", &sig[..63]).is_err(), "short signature");
+        let other = hex32(PUBKEY).unwrap();
+        assert!(verify_signature(&other, b"the zip", &sig).is_err(), "another key");
+    }
+
+    #[test]
+    fn keys_are_64_hex_digits() {
+        assert_eq!(hex32(PUBKEY).unwrap()[..2], [0xfb, 0x47]);
+        for bad in ["", "zz", &PUBKEY[1..], &PUBKEY.replace('f', "g")] {
+            assert_eq!(hex32(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_checksum_is_the_first_word_of_the_sha_file() {
+        let line = "AbC123  contr-rune-macos-arm64.zip\n";
+        assert_eq!(check_sha256("abc123", line), Ok(()));
+        assert!(check_sha256("abc124", line).is_err());
+        assert!(check_sha256("abc123", "").is_err());
+    }
+
+    #[test]
+    fn the_app_is_found_from_the_executable() {
+        let app = |p: &str| app_path(Path::new(p));
+        assert_eq!(app("/Applications/contr-rune.app/Contents/MacOS/contr-rune"), Some(PathBuf::from("/Applications/contr-rune.app")));
+        assert_eq!(app("/Users/me/Applications/My App.app/Contents/MacOS/x"), Some(PathBuf::from("/Users/me/Applications/My App.app")));
+        assert_eq!(app("/repo/target/debug/contr-rune"), None);
+        assert_eq!(app("/Applications/contr-rune.app/Contents/Other/contr-rune"), None);
+        assert_eq!(app("contr-rune"), None);
+    }
+
+    #[test]
+    fn assets_come_from_the_release_or_the_fixture_folder() {
+        assert_eq!(asset_base(None, "v0.2.0"), "https://github.com/contursofran/contr-rune/releases/download/v0.2.0");
+        assert_eq!(asset_base(Some("file:///fx/update/newer.json"), "v9.9.9"), "file:///fx/update");
+    }
+
+    #[test]
+    fn the_helper_gets_the_pid_and_the_paths_and_parses() {
+        let args = helper_args(42, Path::new("/tmp/w/unzipped/contr-rune.app"), Path::new("/Applications/My App.app"), Path::new("/tmp/w"));
+        assert_eq!(&args[2..], ["sh", "42", "/tmp/w/unzipped/contr-rune.app", "/Applications/My App.app", "/tmp/w"].map(OsString::from));
+        // The script must be valid shell: `sh -n` parses it without running it.
+        let ok = Command::new("/bin/sh").arg("-n").arg("-c").arg(&args[1]).status().unwrap().success();
+        assert!(ok);
+        assert!(HELPER.contains("com.apple.quarantine") && HELPER.contains("/usr/bin/open"));
     }
 
     #[test]

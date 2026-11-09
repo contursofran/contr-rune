@@ -37,6 +37,24 @@ jobs:
           ditto -c -k --keepParent contr-rune.app contr-rune-macos-arm64.zip
           shasum -a 256 contr-rune-macos-arm64.zip > contr-rune-macos-arm64.zip.sha256
 
+      - name: Sign the zip (ed25519)
+        working-directory: target/bundle
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          # The runner's /usr/bin/openssl is LibreSSL (no -rawin); use Homebrew's OpenSSL 3.
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          openssl3="$(brew --prefix openssl@3)/bin/openssl"
+          if [ -z "${RELEASE_SIGNING_KEY}" ]; then
+            echo "::error::The RELEASE_SIGNING_KEY secret is not set"
+            exit 1
+          fi
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "${RELEASE_SIGNING_KEY}" > "$key"
+          "$openssl3" pkeyutl -sign -rawin -inkey "$key" -in contr-rune-macos-arm64.zip -out contr-rune-macos-arm64.zip.sig
+          [ "$(wc -c < contr-rune-macos-arm64.zip.sig | tr -d " ")" = 64 ]
+
       - name: Create the GitHub Release
         if: github.ref_type == 'tag'
         env:
@@ -47,6 +65,7 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             target/bundle/contr-rune-macos-arm64.zip \
             target/bundle/contr-rune-macos-arm64.zip.sha256 \
+            target/bundle/contr-rune-macos-arm64.zip.sig \
             --title "${GITHUB_REF_NAME}" \
             --notes "$notes" \
             --generate-notes
