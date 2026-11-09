@@ -666,6 +666,8 @@ pub fn card(k: &Kit, s: &App, layer: &mut Vec<El>) {
         .role("dialog")
         .label("Questions")
         .w(NOTCH_OPEN_WIDTH)
+        // A press on text inside the card is not a press on the scrim.
+        .on_press(|_: &mut App| {})
         .child(body)
         .child(footer);
     let surface = popover::raised(k, content, crate::theme::RADIUS_12);

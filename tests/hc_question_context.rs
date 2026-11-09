@@ -71,5 +71,7 @@ fn a_ref_link_opens_the_browser() {
 fn hash_refs_need_an_origin() {
     let r = run(false, vec![tap(0.5, "notch"), tap(1.0, "qcard/context/D7"), tap(1.5, "qcard/ref/D7/2")]);
     assert_eq!(r.file("opened.log"), "https://example.com/a\n");
+    let r = run(false, vec![tap(0.5, "notch"), tap(1.0, "qcard/context/D7"), tap(1.5, "qcard/ref/D7/0")]);
+    assert!(r.has("qcard") && r.has("qcard/source/D7"), "a tap on a dim ref leaves the card open");
     assert!(r.find("qcard/ref/D7/0").is_some_and(|e| e["role"] != "button"), "#12 is dim text without an origin");
 }
