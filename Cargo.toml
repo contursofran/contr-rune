@@ -10,10 +10,9 @@ description = "A small Rune port of contr's sidebar, tabs and terminal"
 rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["native-file-dialog"] }
 alacritty_terminal = "0.26"
 portable-pty = "0.9"
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
-
-[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
 
 [profile.dev.package."*"]
 opt-level = 2

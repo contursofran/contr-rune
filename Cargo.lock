@@ -645,6 +645,7 @@ dependencies = [
  "portable-pty",
  "rune",
  "rune-kit",
+ "serde",
  "serde_json",
 ]
 

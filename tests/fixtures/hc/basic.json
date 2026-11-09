@@ -1,0 +1,8 @@
+{
+  "hello": {"generation": 1, "version": "0.1.19", "core": {"id": "913cbec723543c5e29a10355871310fc", "name": "fake-core"}},
+  "terminals": [
+    {"address": "t1", "name": "term-00001", "parent": null, "cwd": "/tmp", "argv": [], "labels": {"contr": "agent", "role": "terminal", "project": "tmp"},
+     "state": "live", "turn": 0, "title": "", "exit_code": null, "reason": null, "created_ms": 1, "status_ms": 1, "cols": 100, "rows": 30,
+     "foreground": {"pid": 100, "name": "zsh", "argv": [], "cwd": "/tmp"}, "status": null}
+  ]
+}
