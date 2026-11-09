@@ -303,10 +303,21 @@ Every part: branch `part-h<n>-<name>` off `origin/main`; `cargo build` with no w
   (`UserPromptSubmit` → working, `Stop` → idle, `Notification` permission → blocked) that writes OSC 7501 to the
   terminal. The exact OSC 7501 byte format must be taken from the protocol spec first; it is not in the hc docs.
 
-- **Result (2026-11-08, `scripts/hc-status-probe.sh`, hc 0.1.19):** neither program reports. Claude Code
-  2.1.319 (`foreground` "2.1.319") and Codex (`--no-daemon`, `foreground` "node") both kept `status: null` after
-  20 s idle, and Claude also after being sent a prompt. So every agent shows Idle and needs-you never fires
-  until **H7b** (a status hook) exists. The OSC 7501 byte format is still needed from the hc protocol spec.
+- **Result (corrected 2026-11-09): Claude Code reports natively; no hook is needed (H7b dropped).** Tested in an
+  isolated session (`HC_SESSION=h7b`, scratch dirs), Claude Code 2.1.319 with no hooks and a scrubbed environment:
+  after a prompt, `hc get` showed `status {"app":"claude-code","state":"working"}`, `reported: true`, then
+  `"state":"done"` (contr-rune maps `done` to Idle). With `--permission-mode default` and a command that needs
+  approval it showed `{"state":"blocked","kind":"permission","msg":"approve Bash: …"}` while the dialog was open.
+  Not yet seen: `kind=question` (elicitation), auth, and the state right after an approval. Claude sends no `title`.
+  The first probe saw `status: null` because Claude reports nothing before its first turn (it was idle at the
+  prompt); its `PROBE_SEND` run ended the Claude process for an unknown reason. Codex status is still untested.
+- **OSC 7501 wire format** (for a future reporter, e.g. Codex): `ESC ] 7501 ; state=<s>[:kind=<k>][:progress=0..100]
+  [:id=<record>][:app=<a>][:title=<base64>][:msg=<base64>]` ended by `ESC \` or BEL. `state` is idle, working,
+  done, blocked, error or `clear` (removes records); `kind` (permission, question, auth) matters only when blocked;
+  an empty id is the root record; `ESC ] 7501 ; ? ST` is a support query. Sources: herdr-core
+  `crates/herdr-core/src/status.rs` (`Status::encode`), `crates/ghostty-vt/src/lib.rs` (~283, `StatusReport`),
+  `crates/ghostty-vt/src/tests.rs` (158+), `schema/README.md` "Status". hc sets `HC_TERMINAL_ID` inside its
+  terminals (`crates/herdr-core/src/SKILL.md`:10).
 
 **H8 · Selecting an agent shows its terminal**
 - Files: `src/main.rs`, `src/hc/term.rs`.
