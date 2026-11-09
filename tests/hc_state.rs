@@ -195,3 +195,14 @@ fn a_tab_whose_program_is_blocked_shows_needs_attention() {
     assert!(dot(&r), "the blocked tab has the attention dot");
     assert!(!dot(&run(None)), "a calm tab has none");
 }
+
+#[test]
+fn a_missed_snapshot_without_the_tab_terminal_closes_the_tab() {
+    // The scene opens one tab (`t20`). A `missed` snapshot that lacks it must close it, as `removed` would.
+    let fx: Value = serde_json::from_str(include_str!("fixtures/hc/blocked.json")).unwrap();
+    let missed = json!({"after_ms": 250, "method": "missed", "params": {"seq": 20, "terminals": fx["terminals"]}});
+    let r = run(Some(vec![missed]));
+    assert!(!r.elements().iter().any(|e| e["key"] == "term-1"), "the tab row is gone");
+    let calm = run(None);
+    assert!(calm.elements().iter().any(|e| e["key"] == "term-1"), "without the snapshot the tab stays");
+}

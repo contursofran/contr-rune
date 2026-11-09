@@ -221,6 +221,20 @@ fn subscribe(d: &Dialer, notes: Sender<Note>) -> Result<(Opened, Snapshot), Stri
     Ok((o, snap))
 }
 
+/// What a `missed` snapshot says happened to terminals we had: absent now is `Removed`, finished
+/// now (and not before) is `Finished`.
+fn gone_in(before: &[Terminal], after: &[Terminal]) -> Vec<(String, TermEvent)> {
+    let mut out = Vec::new();
+    for b in before {
+        match after.iter().find(|a| a.address == b.address) {
+            None => out.push((b.address.clone(), TermEvent::Removed)),
+            Some(a) if a.state == "finished" && b.state != "finished" => out.push((b.address.clone(), TermEvent::Finished)),
+            Some(_) => {}
+        }
+    }
+    out
+}
+
 /// Keep the terminal list current and send it (and the events tabs care about) until the events
 /// line ends or goes silent. `seq` is the snapshot's: events at or below it are history.
 fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool, terminals: Vec<Terminal>, seq: u64) {
@@ -243,7 +257,17 @@ fn forward_until_loss(rx: &Receiver<Note>, send: &dyn Fn(HcUpdate) -> bool, term
                 }
             }
             "missed" => match serde_json::from_value::<Missed>(note.params.clone()) {
-                Ok(m) => live.missed(m.seq, m.terminals, now),
+                Ok(m) => {
+                    // The events that went missing may have ended tabs: tell them as the events would.
+                    let before = live.terminals.clone();
+                    let changed = live.missed(m.seq, m.terminals, now);
+                    for (terminal, kind) in gone_in(&before, &live.terminals) {
+                        if !send(HcUpdate::Event { terminal, kind }) {
+                            return;
+                        }
+                    }
+                    changed
+                }
                 Err(_) => false,
             },
             _ => false,
@@ -273,6 +297,15 @@ mod tests {
     use serde_json::Value;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_missed_snapshot_ends_the_tabs_it_no_longer_lists() {
+        let t = |a: &str, state: &str| Terminal { address: a.into(), state: state.into(), ..Terminal::default() };
+        let before = [t("t1", "live"), t("t2", "live"), t("t3", "live"), t("t4", "finished")];
+        let after = [t("t1", "live"), t("t3", "finished"), t("t4", "finished"), t("t5", "live")];
+        assert_eq!(gone_in(&before, &after), vec![("t2".to_owned(), TermEvent::Removed), ("t3".to_owned(), TermEvent::Finished)]);
+        assert!(gone_in(&after, &after).is_empty());
+    }
 
     fn fake(fx: Value) -> Dialer {
         Dialer::Fake(Arc::new(Fixture::from_value(fx)))
